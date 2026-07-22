@@ -31,7 +31,7 @@ class TelegramClientWrapper:
         if not self.client:
             raise RuntimeError("Client not connected.")
         
-        print("\n=== Telegram Downloader (TGDL) Authorization ===")
+        print("\n=== Telegram Downloader (TeleD) Authorization ===")
         phone = input("Enter your phone number (with country code, e.g. +1234567890): ").strip()
         sent_code = await self.client.send_code_request(phone)
         

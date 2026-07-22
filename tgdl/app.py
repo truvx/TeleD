@@ -10,9 +10,9 @@ from tgdl.browser import Browser
 from tgdl.downloader import Downloader
 from tgdl.screens.main_screen import MainScreen
 
-class TGDLApp(App):
-    """The main Textual application class for TGDL."""
-    TITLE = "TGDL - Telegram Downloader"
+class TeleDApp(App):
+    """The main Textual application class for TeleD."""
+    TITLE = "TeleD - Telegram Downloader"
     
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -35,7 +35,7 @@ class TGDLApp(App):
 
 def prompt_credentials() -> None:
     """Prompt the user for API ID and Hash if not present, and save to .env."""
-    print("=== TGDL Configuration Setup ===")
+    print("=== TeleD Configuration Setup ===")
     print("Please generate your Telegram API credentials at: https://my.telegram.org/")
     try:
         api_id = input("Enter API ID (integer): ").strip()
@@ -81,7 +81,7 @@ def main() -> None:
     asyncio.run(check_and_login())
     
     # 3. Start Textual interface
-    app = TGDLApp()
+    app = TeleDApp()
     app.run()
 
 if __name__ == "__main__":
