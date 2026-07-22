@@ -82,8 +82,7 @@ class MainScreen(Screen):
 
         try:
             me = await self.browser.client_wrapper.get_me()
-            username = me.get("username") or f"User_{me.get('id', 0)}"
-            self.sub_title = f"Connected as: @{username}"
+            self.sub_title = f"Connected as: @{me.get('username') or f'User_{me.get(\"id\", 0)}'}"
         except Exception:
             self.sub_title = "Connected as: @TelegramUser"
 
@@ -93,11 +92,7 @@ class MainScreen(Screen):
         if saved_search:
             self.query_one("#search-bar", Input).value = saved_search
         self.app.theme = await db.get_setting("theme", "textual-dark")
-
-        def handle_download_error(msg_id: int, reason: str) -> None:
-            self.app.push_screen(ErrorModal("Download Error", f"Message #{msg_id} failed: {reason}"))
-
-        self.downloader.on_failed.append(handle_download_error)
+        self.downloader.on_failed.append(lambda mid, r: self.app.push_screen(ErrorModal("Download Error", f"Message #{mid} failed: {r}")))
         await self.reload_table()
         self.downloader.start()
         self.set_interval(0.5, self.update_stats_and_jobs)
@@ -119,8 +114,7 @@ class MainScreen(Screen):
         await self.reload_table()
 
     async def action_toggle_theme(self) -> None:
-        current = getattr(self.app, "theme", "textual-dark")
-        next_theme = "textual-light" if current == "textual-dark" else "textual-dark"
+        next_theme = "textual-light" if getattr(self.app, "theme", "textual-dark") == "textual-dark" else "textual-dark"
         self.app.theme = next_theme
         await db.set_setting("theme", next_theme)
 
@@ -137,7 +131,7 @@ class MainScreen(Screen):
 
     async def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
         col_key = str(event.column_key.value)
-        key_map = {"filename": "filename", "type": "extension", "size": "size", "date": "date", "downloaded": "downloaded", "status": "downloaded"}
+        key_map = {"filename": "filename", "type": "extension", "size": "size", "date": "date", "downloaded": "downloaded"}
         target = key_map.get(col_key, "message_id")
         self.sort_desc = not self.sort_desc if self.sort_by == target else True
         self.sort_by = target
@@ -145,13 +139,23 @@ class MainScreen(Screen):
         await db.set_setting("sort_desc", str(self.sort_desc).lower())
         await self.reload_table()
 
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        msg_id = int(event.row_key.value)
+        table = self.query_one("#files-table", DataTable)
+        if msg_id in self.selected_ids:
+            self.selected_ids.remove(msg_id)
+            table.update_cell(event.row_key, "select", " ")
+        else:
+            self.selected_ids.add(msg_id)
+            table.update_cell(event.row_key, "select", "✔")
+        asyncio.create_task(self._update_counters())
+
     async def reload_table(self) -> None:
         try:
             search_bar = self.query_one("#search-bar", Input)
             query = search_bar.value.strip() or None
         except Exception:
-            search_bar = None
-            query = None
+            search_bar, query = None, None
 
         cat = self.categories[self.current_category_idx]
         messages = await self.browser.load_messages(search_query=query, sort_by=self.sort_by, sort_desc=self.sort_desc, category_filter=cat)
@@ -180,7 +184,6 @@ class MainScreen(Screen):
             self.query_one("#stat-speed", StatCard).update_value(format_bytes(total_bytes))
         except Exception:
             pass
-
         await self._update_counters()
 
     async def on_input_changed(self, event: Input.Changed) -> None:
@@ -254,8 +257,9 @@ class MainScreen(Screen):
         all_msgs = await db.get_cached_messages()
         dl_cnt = sum(1 for m in all_msgs if m.download_status == "completed")
         q_cnt = self.downloader.queue.qsize() + len(self.downloader.queued_ids)
+        sel_bytes = sum((await db.get_message(mid)).file_size for mid in list(self.selected_ids) if await db.get_message(mid))
         try:
-            self.query_one("#counter-bar", CounterBar).update_counts(selected=len(self.selected_ids), downloaded=dl_cnt, queue=q_cnt)
+            self.query_one("#counter-bar", CounterBar).update_counts(selected=len(self.selected_ids), selected_bytes=sel_bytes, downloaded=dl_cnt, queue=q_cnt)
         except Exception:
             pass
 

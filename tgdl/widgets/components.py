@@ -6,7 +6,6 @@ from tgdl.models import DownloadJob
 from tgdl.utils.helpers import format_bytes, format_speed, format_eta
 
 def make_ascii_bar(percentage: float, width: int = 20) -> str:
-    """Generate a clean block progress bar (e.g., █████████████░░░░░░░)."""
     p = max(0.0, min(100.0, percentage))
     filled = int(width * (p / 100.0))
     filled = max(0, min(width, filled))
@@ -170,7 +169,7 @@ class StatCard(Widget):
 
 
 class CounterBar(Widget):
-    """Bottom status bar displaying selection, downloaded, and queue counts."""
+    """Bottom status bar displaying selection count, selected size, downloaded, and queue counts."""
 
     DEFAULT_CSS = """
     CounterBar {
@@ -188,23 +187,26 @@ class CounterBar(Widget):
     }
     """
 
-    def __init__(self, selected: int = 0, downloaded: int = 0, queue: int = 0, **kwargs) -> None:
+    def __init__(self, selected: int = 0, selected_bytes: int = 0, downloaded: int = 0, queue: int = 0, **kwargs) -> None:
         super().__init__(**kwargs)
         self.selected = selected
+        self.selected_bytes = selected_bytes
         self.downloaded = downloaded
         self.queue = queue
 
     def compose(self) -> ComposeResult:
-        yield Label(f"Selected: {self.selected}", id="cnt-selected", classes="item")
+        yield Label(f"Selected: {self.selected} ({format_bytes(self.selected_bytes)})", id="cnt-selected", classes="item")
         yield Label(f"Downloaded: {self.downloaded}", id="cnt-downloaded", classes="item")
         yield Label(f"Queue: {self.queue}", id="cnt-queue", classes="item")
 
-    def update_counts(self, selected: int, downloaded: int, queue: int) -> None:
+    def update_counts(self, selected: int, selected_bytes: int, downloaded: int, queue: int) -> None:
         self.selected = selected
+        self.selected_bytes = selected_bytes
         self.downloaded = downloaded
         self.queue = queue
         try:
-            self.query_one("#cnt-selected", Label).update(f"Selected: [bold cyan]{selected}[/]")
+            sz_str = format_bytes(selected_bytes)
+            self.query_one("#cnt-selected", Label).update(f"Selected: [bold cyan]{selected}[/] ({sz_str})")
             self.query_one("#cnt-downloaded", Label).update(f"Downloaded: [bold green]{downloaded}[/]")
             self.query_one("#cnt-queue", Label).update(f"Queue: [bold yellow]{queue}[/]")
         except Exception:
