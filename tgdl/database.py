@@ -56,6 +56,10 @@ def _init_db_sync() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_files_size ON files(size);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_files_downloaded ON files(downloaded);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_files_message_id ON files(message_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_ext ON files(extension);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_ext_date ON files(extension, date);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_dl_date ON files(downloaded, date);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_fn_date ON files(filename, date);")
         conn.commit()
 
 async def init_db() -> None:
@@ -97,9 +101,7 @@ async def cache_messages(messages: List[MessageMetadata]) -> None:
         await asyncio.to_thread(_cache_messages_sync, messages)
 
 def _build_where_clause(search_query: Optional[str], category_filter: Optional[str]) -> Tuple[str, list]:
-    where_parts = []
-    params = []
-    
+    where_parts, params = [], []
     if search_query:
         q = search_query.strip()
         pattern = q.replace("*", "%").replace("?", "_") if ("*" in q or "?" in q) else f"%{q}%"
@@ -129,15 +131,13 @@ def _get_cached_messages_sync(
     sort_by: str = "message_id",
     sort_desc: bool = True,
     category_filter: Optional[str] = None,
-    limit: int = 300,
+    limit: int = 250,
     offset: int = 0
 ) -> List[MessageMetadata]:
     valid_cols = {
-        "filename": "filename", "name": "filename",
-        "size": "size", "file_size": "size",
-        "date": "date", "upload_date": "date",
-        "ext": "extension", "extension": "extension", "type": "extension",
-        "downloaded": "downloaded", "status": "downloaded",
+        "filename": "filename", "name": "filename", "size": "size", "file_size": "size",
+        "date": "date", "upload_date": "date", "ext": "extension", "extension": "extension",
+        "type": "extension", "downloaded": "downloaded", "status": "downloaded",
         "message_id": "message_id", "id": "message_id"
     }
     col_name = valid_cols.get(sort_by.lower(), "message_id")
@@ -168,7 +168,7 @@ async def get_cached_messages(
     sort_by: str = "message_id",
     sort_desc: bool = True,
     category_filter: Optional[str] = None,
-    limit: int = 300,
+    limit: int = 250,
     offset: int = 0
 ) -> List[MessageMetadata]:
     return await asyncio.to_thread(_get_cached_messages_sync, search_query, sort_by, sort_desc, category_filter, limit, offset)

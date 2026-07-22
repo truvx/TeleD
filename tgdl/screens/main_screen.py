@@ -15,7 +15,7 @@ from tgdl.screens.settings_screen import SettingsScreen
 import tgdl.database as db
 
 class MainScreen(Screen):
-    """Modern btop/LazyGit styled dashboard screen for TeleD."""
+    """Modern btop/LazyGit styled dashboard screen for TeleD with 100k+ file pagination."""
 
     BINDINGS = [
         ("ctrl+p,ctrl+f,f", "focus_search", "Search"),
@@ -27,6 +27,8 @@ class MainScreen(Screen):
         ("space", "toggle_selection", "Toggle"),
         ("enter", "download_selected", "Download"),
         ("escape", "clear_search", "Back"),
+        ("right,]", "next_page", "Next Page"),
+        ("left,[", "prev_page", "Prev Page"),
         ("c", "cycle_category", "Category"),
         ("p", "toggle_pause_queue", "Pause Queue"),
         ("x", "cancel_queue", "Cancel Queue"),
@@ -59,6 +61,7 @@ class MainScreen(Screen):
         self.sort_fields = ["filename", "size", "date", "extension", "downloaded", "message_id"]
         self.categories = [None, "videos", "images", "pdf", "documents", "archives", "audio"]
         self.current_category_idx = 0
+        self.page, self.page_size, self.total_count = 1, 250, 0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -86,6 +89,7 @@ class MainScreen(Screen):
             self.sub_title = f"Connected as: @{me.get('username') or f'User_{me.get(\"id\", 0)}'}"
         except Exception:
             self.sub_title = "Connected as: @TelegramUser"
+
         self.sort_by = await db.get_setting("sort_by", "message_id")
         self.sort_desc = (await db.get_setting("sort_desc", "true")) == "true"
         saved_search = await db.get_setting("search_query", "")
@@ -104,6 +108,7 @@ class MainScreen(Screen):
     async def action_clear_search(self) -> None:
         self.query_one("#search-bar", Input).value = ""
         await db.set_setting("search_query", "")
+        self.page = 1
         self.query_one("#files-table", DataTable).focus()
         await self.reload_table()
     async def action_toggle_theme(self) -> None:
@@ -113,12 +118,21 @@ class MainScreen(Screen):
         self.app.push_screen(SettingsScreen(), lambda saved: asyncio.create_task(self.reload_table()) if saved else None)
     async def action_cycle_category(self) -> None:
         self.current_category_idx = (self.current_category_idx + 1) % len(self.categories)
+        self.page = 1
         await self.reload_table()
     async def action_cycle_sorting(self) -> None:
         self.sort_by = self.sort_fields[(self.sort_fields.index(self.sort_by) + 1) % len(self.sort_fields)]
         await db.set_setting("sort_by", self.sort_by)
         await db.set_setting("sort_desc", str(self.sort_desc).lower())
         await self.reload_table()
+    async def action_next_page(self) -> None:
+        if self.page < max(1, (self.total_count + self.page_size - 1) // self.page_size):
+            self.page += 1
+            await self.reload_table()
+    async def action_prev_page(self) -> None:
+        if self.page > 1:
+            self.page -= 1
+            await self.reload_table()
     async def action_toggle_pause_queue(self) -> None:
         await (self.downloader.resume_queue() if self.downloader.is_paused else self.downloader.pause_queue())
         await self.reload_table()
@@ -128,6 +142,7 @@ class MainScreen(Screen):
     async def action_retry_failed(self) -> None:
         await self.downloader.retry_failed()
         await self.reload_table()
+
     async def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
         target = {"filename": "filename", "type": "extension", "size": "size", "date": "date", "downloaded": "downloaded"}.get(str(event.column_key.value), "message_id")
         self.sort_desc = not self.sort_desc if self.sort_by == target else True
@@ -154,22 +169,25 @@ class MainScreen(Screen):
         except Exception:
             search_bar, query = None, None
         cat = self.categories[self.current_category_idx]
-        messages = await self.browser.load_messages(search_query=query, sort_by=self.sort_by, sort_desc=self.sort_desc, category_filter=cat)
-        cnt, total_bytes = await db.get_filtered_totals(search_query=query, category_filter=cat)
+        self.total_count, total_bytes = await db.get_filtered_totals(search_query=query, category_filter=cat)
+        max_pages = max(1, (self.total_count + self.page_size - 1) // self.page_size)
+        if self.page > max_pages: self.page = max_pages
+
+        offset = (self.page - 1) * self.page_size
+        messages = await self.browser.load_messages(search_query=query, sort_by=self.sort_by, sort_desc=self.sort_desc, category_filter=cat, limit=self.page_size, offset=offset)
         table = self.query_one("#files-table", DataTable)
         table.clear()
-        cat_label = f"[{cat.upper()}] " if cat else ""
-        paused_str = " (PAUSED)" if self.downloader.is_paused else ""
-        if search_bar and query:
-            search_bar.placeholder = f"🔍 {cat_label}Search ({cnt} items, {format_bytes(total_bytes)}){paused_str}..."
-        elif search_bar:
-            search_bar.placeholder = f"🔍 {cat_label}Quick Search... (Ctrl+P, Ctrl+S Settings, ESC clear){paused_str}"
+        cat_label, paused_str, page_info = f"[{cat.upper()}] " if cat else "", " (PAUSED)" if self.downloader.is_paused else "", f"Page {self.page}/{max_pages}"
+        if search_bar:
+            search_bar.placeholder = f"🔍 {cat_label}Search ({page_info}, {self.total_count} items, {format_bytes(total_bytes)}){paused_str}..."
+
+        st_map = {"completed": "[bold green]Completed[/]", "failed": "[bold red]Failed[/]", "downloading": "[bold yellow]Downloading[/]", "paused": "[bold yellow]Paused[/]"}
         for msg in messages:
             badge = get_colored_file_badge(msg.filename, msg.mime_type, msg.extension)
             fn_disp = highlight_text(msg.filename, query) if query else msg.filename
             is_dl = "[bold green]Yes[/]" if msg.download_status == "completed" else "[dim]No[/]"
-            st_map = {"completed": "[bold green]Completed[/]", "failed": "[bold red]Failed[/]", "downloading": "[bold yellow]Downloading[/]", "paused": "[bold yellow]Paused[/]"}
             table.add_row("✔" if msg.message_id in self.selected_ids else " ", fn_disp, format_bytes(msg.file_size), badge, msg.upload_date[:10] if msg.upload_date else "", is_dl, st_map.get(msg.download_status, f"[bold cyan]{msg.download_status.title()}[/]"), key=str(msg.message_id))
+
         try:
             self.query_one("#stat-speed", StatCard).update_value(format_bytes(total_bytes))
         except Exception:
@@ -178,6 +196,7 @@ class MainScreen(Screen):
 
     async def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "search-bar":
+            self.page = 1
             await db.set_setting("search_query", event.input.value)
             await self.reload_table()
 
@@ -204,19 +223,10 @@ class MainScreen(Screen):
     async def action_clear_selection(self) -> None:
         table = self.query_one("#files-table", DataTable)
         for key in list(table.rows.keys()):
-            self.selected_ids.discard(int(key.value))
+            self.selected_ids.discard(key.value)
             table.update_cell(key, "select", " ")
         self.selected_ids.clear()
         await self._update_counters()
-
-    async def action_remove_cache_entry(self) -> None:
-        table = self.query_one("#files-table", DataTable)
-        if table.row_count > 0 and table.cursor_coordinate is not None:
-            row_key = table.get_row_key_at_index(table.cursor_coordinate.row)
-            msg_id = int(row_key.value)
-            await db.delete_cached_message(msg_id)
-            self.selected_ids.discard(msg_id)
-            await self.reload_table()
 
     async def action_download_selected(self) -> None:
         table = self.query_one("#files-table", DataTable)
@@ -242,20 +252,17 @@ class MainScreen(Screen):
             spinner.display = False
 
     async def _update_counters(self) -> None:
-        all_msgs = await db.get_cached_messages()
-        dl_cnt = sum(1 for m in all_msgs if m.download_status == "completed")
-        q_cnt = self.downloader.queue.qsize() + len(self.downloader.queued_ids)
+        all_msgs = await db.get_cached_messages(limit=100000)
+        dl_cnt, q_cnt = sum(1 for m in all_msgs if m.download_status == "completed"), self.downloader.queue.qsize() + len(self.downloader.queued_ids)
         sel_bytes = sum((await db.get_message(mid)).file_size for mid in list(self.selected_ids) if await db.get_message(mid))
-        q_dl = sum(j.downloaded_bytes for j in self.downloader.active_jobs.values())
-        q_tot = sum(j.file_size for j in self.downloader.active_jobs.values())
+        q_dl, q_tot = sum(j.downloaded_bytes for j in self.downloader.active_jobs.values()), sum(j.file_size for j in self.downloader.active_jobs.values())
         try:
             self.query_one("#counter-bar", CounterBar).update_counts(selected=len(self.selected_ids), selected_bytes=sel_bytes, downloaded=dl_cnt, queue=q_cnt, queue_downloaded=q_dl, queue_total=q_tot)
         except Exception:
             pass
 
     async def update_stats_and_jobs(self) -> None:
-        active_jobs = self.downloader.active_jobs
-        downloads_list = self.query_one("#downloads-list", VerticalScroll)
+        active_jobs, downloads_list = self.downloader.active_jobs, self.query_one("#downloads-list", VerticalScroll)
         for msg_id, job in list(active_jobs.items()):
             if msg_id not in self.progress_widgets:
                 widget = DownloadProgressRow(job)
@@ -268,8 +275,7 @@ class MainScreen(Screen):
             if msg_id not in active_jobs:
                 msg_row = await db.get_message(msg_id)
                 if widget.job.status == "downloading" and msg_row:
-                    job_copy = DownloadJob(message_id=msg_id, filename=widget.job.filename, file_size=widget.job.file_size, downloaded_bytes=msg_row.file_size, status=msg_row.download_status, progress=100.0 if msg_row.download_status == "completed" else 0.0)
-                    widget.update_job(job_copy)
+                    widget.update_job(DownloadJob(message_id=msg_id, filename=widget.job.filename, file_size=widget.job.file_size, downloaded_bytes=msg_row.file_size, status=msg_row.download_status, progress=100.0 if msg_row.download_status == "completed" else 0.0))
                 async def remove_widget(mid: int, w: DownloadProgressRow) -> None:
                     await asyncio.sleep(3)
                     try:
