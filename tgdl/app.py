@@ -9,28 +9,36 @@ from tgdl.database import init_db
 from tgdl.browser import Browser
 from tgdl.downloader import Downloader
 from tgdl.screens.main_screen import MainScreen
+from tgdl.services.container import container
+from tgdl.logger import get_logger
+
+logger = get_logger()
 
 class TeleDApp(App):
-    """The main Textual application class for TeleD."""
+    """The main Textual application class for TeleD orchestrating DI services."""
     TITLE = "TeleD - Telegram Downloader"
     theme = "textual-dark"
     
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, client_wrapper: Optional[TelegramClientWrapper] = None, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.client_wrapper = TelegramClientWrapper()
+        self.client_wrapper = client_wrapper or TelegramClientWrapper()
         self.browser = Browser(self.client_wrapper)
         self.downloader = Downloader(self.client_wrapper)
         
+        container.register(TelegramClientWrapper, self.client_wrapper)
+        container.register(Browser, self.browser)
+        container.register(Downloader, self.downloader)
+        
     async def on_mount(self) -> None:
-        # Initialize SQLite cache database schema
+        logger.info("Initializing database schema...")
         await init_db()
-        # Connect client in Textual's event loop
+        logger.info("Connecting Telegram client...")
         await self.client_wrapper.connect()
-        # Push browser main dashboard screen
+        logger.info("Launching MainScreen TUI dashboard...")
         await self.push_screen(MainScreen(self.browser, self.downloader))
 
     async def on_unmount(self) -> None:
-        # Gracefully stop workers and release Telethon lock
+        logger.info("Shutting down TeleD services gracefully...")
         await self.downloader.stop()
         await self.client_wrapper.disconnect()
 
@@ -62,26 +70,22 @@ async def check_and_login() -> None:
         if not is_auth:
             await client_wrapper.authorize_interactive()
     except Exception as e:
+        logger.error(f"Error during Telegram login: {e}")
         print(f"Error during Telegram login: {e}")
         sys.exit(1)
     finally:
         await client_wrapper.disconnect()
 
 def main() -> None:
-    # 1. Validate config parameters. Prompt if missing.
     if not config.is_config_valid():
         prompt_credentials()
-        # Reload configuration file variables
         import importlib
         importlib.reload(config)
         if not config.is_config_valid():
             print("Configuration invalid. Exiting.")
             sys.exit(1)
             
-    # 2. Sync Telethon login session asynchronously
     asyncio.run(check_and_login())
-    
-    # 3. Start Textual interface
     app = TeleDApp()
     app.run()
 

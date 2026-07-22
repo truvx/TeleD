@@ -1,0 +1,2 @@
+[console_scripts]
+teled = tgdl.app:main

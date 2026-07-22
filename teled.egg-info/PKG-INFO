@@ -1,3 +1,23 @@
+Metadata-Version: 2.4
+Name: teled
+Version: 1.0.0
+Summary: A modern LazyGit-inspired TUI downloader for Telegram Saved Messages
+Author: TeleD Developers
+Author-email: TeleD Developers <info@teled.dev>
+License: MIT
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: telethon>=1.34.0
+Requires-Dist: textual>=0.50.0
+Requires-Dist: rich>=13.7.0
+Requires-Dist: rapidfuzz>=3.6.0
+Requires-Dist: aiofiles>=23.2.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: pytest>=8.0.0
+Requires-Dist: pytest-asyncio>=0.23.0
+Dynamic: author
+Dynamic: requires-python
+
 # TeleD - Advanced Telegram Saved Messages Downloader
 
 [![Python Version](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://python.org)
