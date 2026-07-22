@@ -7,7 +7,7 @@ import aiofiles
 from telethon.errors.rpcerrorlist import FloodWaitError
 from telethon.errors import AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError, AuthKeyInvalidError, RPCError
 
-from tgdl.config import DOWNLOAD_DIR, CONCURRENT_DOWNLOADS
+import tgdl.config as config
 from tgdl.database import get_cached_messages, update_download_status, record_download_history
 from tgdl.models import DownloadJob, MessageMetadata
 from tgdl.telegram_client import TelegramClientWrapper
@@ -15,9 +15,9 @@ from tgdl.telegram_client import TelegramClientWrapper
 class Downloader:
     """Production download engine supporting streaming, resume, corruption checks, safety, and error handling."""
 
-    def __init__(self, client_wrapper: TelegramClientWrapper, concurrency: int = CONCURRENT_DOWNLOADS) -> None:
+    def __init__(self, client_wrapper: TelegramClientWrapper, concurrency: Optional[int] = None) -> None:
         self.client_wrapper = client_wrapper
-        self.concurrency = concurrency
+        self.concurrency = concurrency or config.CONCURRENT_DOWNLOADS
         self.queue: asyncio.Queue[int] = asyncio.Queue()
         self.queued_ids: set[int] = set()
         self.active_jobs: Dict[int, DownloadJob] = {}
@@ -32,7 +32,7 @@ class Downloader:
     def start(self) -> None:
         if self._running: return
         self._running = True
-        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+        os.makedirs(config.DOWNLOAD_DIR, exist_ok=True)
         asyncio.create_task(self.restore_queue_from_db())
         self.workers = [asyncio.create_task(self._worker()) for _ in range(self.concurrency)]
 
@@ -170,7 +170,7 @@ class Downloader:
         if not msgs or not msgs[0] or not msgs[0].media: raise ValueError("Telegram message or media no longer available.")
         msg = msgs[0]
 
-        local_path = os.path.join(DOWNLOAD_DIR, job.filename)
+        local_path = os.path.join(config.DOWNLOAD_DIR, job.filename)
         local_size = 0
 
         if os.path.exists(local_path):

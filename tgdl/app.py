@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+from typing import Optional
 from textual.app import App
 
 import tgdl.config as config
@@ -58,6 +59,7 @@ def prompt_credentials() -> None:
             f.write(f"TELEGRAM_API_ID={api_id}\n")
             f.write(f"TELEGRAM_API_HASH={api_hash}\n")
         print(f"Credentials successfully saved to {env_path}!\n")
+        config.reload_config()
     except (KeyboardInterrupt, SystemExit):
         print("\nSetup cancelled.")
         sys.exit(1)
@@ -79,8 +81,7 @@ async def check_and_login() -> None:
 def main() -> None:
     if not config.is_config_valid():
         prompt_credentials()
-        import importlib
-        importlib.reload(config)
+        config.reload_config()
         if not config.is_config_valid():
             print("Configuration invalid. Exiting.")
             sys.exit(1)

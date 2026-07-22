@@ -9,26 +9,27 @@ from telethon.errors import (
 )
 from telethon.tl.types import MessageMediaWebPage, DocumentAttributeVideo, DocumentAttributeAudio
 
-from tgdl.config import API_ID, API_HASH, SESSION_PATH
+import tgdl.config as config
 from tgdl.models import MessageMetadata
 
 class TelegramClientWrapper:
     """Wrapper managing Telethon client connection, session reuse, network resiliency, and error handling."""
 
-    def __init__(self, session_path: str = SESSION_PATH) -> None:
-        self.session_path = session_path
+    def __init__(self, session_path: Optional[str] = None) -> None:
+        self.session_path = session_path or config.SESSION_PATH
         self.client: Optional[TelegramClient] = None
 
     async def connect(self) -> bool:
-        session_dir = os.path.dirname(self.session_path)
+        session_path = self.session_path or config.SESSION_PATH
+        session_dir = os.path.dirname(session_path)
         if session_dir:
             os.makedirs(session_dir, exist_ok=True)
 
-        if not API_ID or not API_HASH:
+        if not config.API_ID or not config.API_HASH:
             raise ValueError("API_ID or API_HASH missing in configuration.")
 
         try:
-            self.client = TelegramClient(self.session_path, API_ID, API_HASH)
+            self.client = TelegramClient(session_path, config.API_ID, config.API_HASH)
             await asyncio.wait_for(self.client.connect(), timeout=15.0)
             return await self.client.is_user_authorized()
         except (AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError, AuthKeyInvalidError) as e:
@@ -38,6 +39,12 @@ class TelegramClientWrapper:
         except ApiIdInvalidError as e:
             raise ValueError("Invalid Telegram API_ID or API_HASH credentials.") from e
 
+    async def authorize_interactive(self) -> None:
+        if not self.client:
+            await self.connect()
+        if self.client and not await self.client.is_user_authorized():
+            await self.client.start()
+
     async def disconnect(self) -> None:
         if self.client:
             try:
@@ -45,6 +52,12 @@ class TelegramClientWrapper:
             except Exception:
                 pass
             self.client = None
+
+    async def get_me(self) -> dict:
+        if not self.client or not await self.client.is_user_authorized():
+            return {}
+        me = await self.client.get_me()
+        return {"id": me.id, "username": me.username, "first_name": me.first_name, "phone": me.phone} if me else {}
 
     async def fetch_media_messages(self, min_id: int = 0) -> List[MessageMetadata]:
         if not self.client:
