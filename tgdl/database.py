@@ -11,6 +11,10 @@ def _init_db_sync() -> None:
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
     with sqlite3.connect(DATABASE_PATH) as conn:
+        # Enable WAL mode for high concurrency non-blocking reads/writes
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        
         conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 message_id INTEGER PRIMARY KEY,
@@ -34,6 +38,14 @@ def _init_db_sync() -> None:
                 path TEXT NOT NULL
             )
         """)
+        
+        # Multi-column indexes for instant searching/sorting over 50,000+ rows
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_filename ON messages(filename);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_extension ON messages(extension);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_upload_date ON messages(upload_date);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_file_size ON messages(file_size);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_download_status ON messages(download_status);")
+        
         cursor = conn.execute("PRAGMA table_info(messages)")
         cols = [row[1] for row in cursor.fetchall()]
         if "extension" not in cols:
@@ -73,7 +85,9 @@ async def cache_messages(messages: List[MessageMetadata]) -> None:
 def _get_cached_messages_sync(
     search_query: Optional[str] = None,
     sort_by: str = "message_id",
-    sort_desc: bool = True
+    sort_desc: bool = True,
+    limit: int = 300,
+    offset: int = 0
 ) -> List[MessageMetadata]:
     valid_cols = {
         "message_id": "message_id",
@@ -103,7 +117,8 @@ def _get_cached_messages_sync(
         query += " WHERE filename LIKE ? OR extension LIKE ? OR upload_date LIKE ? OR mime_type LIKE ?"
         params = [pattern, pattern, pattern, pattern]
         
-    query += f" ORDER BY {col_name} {direction}"
+    query += f" ORDER BY {col_name} {direction} LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
     
     with sqlite3.connect(DATABASE_PATH) as conn:
         conn.row_factory = sqlite3.Row
@@ -128,9 +143,11 @@ def _get_cached_messages_sync(
 async def get_cached_messages(
     search_query: Optional[str] = None,
     sort_by: str = "message_id",
-    sort_desc: bool = True
+    sort_desc: bool = True,
+    limit: int = 300,
+    offset: int = 0
 ) -> List[MessageMetadata]:
-    return await asyncio.to_thread(_get_cached_messages_sync, search_query, sort_by, sort_desc)
+    return await asyncio.to_thread(_get_cached_messages_sync, search_query, sort_by, sort_desc, limit, offset)
 
 def _update_download_status_sync(
     message_id: int,
