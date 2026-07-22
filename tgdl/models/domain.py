@@ -14,6 +14,8 @@ class MessageMetadata:
     chat_id: int = 0
     path: Optional[str] = None
     file_hash: Optional[str] = None
+    duration: Optional[int] = None      # Duration in seconds for video/audio
+    resolution: Optional[str] = None    # Width x Height string (e.g. 1920x1080)
 
 @dataclass
 class DownloadJob:

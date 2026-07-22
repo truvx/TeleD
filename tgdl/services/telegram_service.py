@@ -26,15 +26,12 @@ class TelegramService(BaseService):
         self._user_info: Optional[Dict[str, Any]] = None
 
     async def initialize(self) -> None:
-        """Initialize and connect the service."""
         await self.connect()
 
     async def shutdown(self) -> None:
-        """Disconnect and release client connection."""
         await self.disconnect()
 
     async def connect(self, session_name: Optional[str] = None) -> bool:
-        """Connect to Telegram using existing session file without re-prompting if authorized."""
         if session_name:
             self.session_name = session_name
             self.session_path = str(DEFAULT_SESSION_DIR / session_name)
@@ -57,13 +54,11 @@ class TelegramService(BaseService):
             return await self.connect()
 
     async def disconnect(self) -> None:
-        """Disconnect active Telegram client session."""
         if self.client:
             await self.client.disconnect()
             self.client = None
 
     async def is_logged_in(self) -> bool:
-        """Check if client session is active and authorized."""
         if not self.client or not self.client.is_connected():
             return False
         try:
@@ -72,7 +67,6 @@ class TelegramService(BaseService):
             return False
 
     async def get_me(self) -> Dict[str, Any]:
-        """Fetch current user profile details."""
         if not self.client or not await self.is_logged_in():
             return {"username": "Guest", "first_name": "Not Connected", "id": 0}
 
@@ -86,7 +80,6 @@ class TelegramService(BaseService):
         return self._user_info
 
     async def get_saved_messages(self, min_id: int = 0) -> List[MessageMetadata]:
-        """Fetch media metadata from Saved Messages ('me') since min_id."""
         if not self.client or not await self.is_logged_in():
             raise RuntimeError("Telegram client is not connected or authorized.")
 
@@ -112,6 +105,20 @@ class TelegramService(BaseService):
             if not ext and "." in filename:
                 ext = "." + filename.rsplit(".", 1)[-1].lower()
 
+            duration: Optional[int] = None
+            resolution: Optional[str] = None
+
+            if msg.document and msg.document.attributes:
+                for attr in msg.document.attributes:
+                    if hasattr(attr, "duration") and attr.duration:
+                        duration = int(attr.duration)
+                    if hasattr(attr, "w") and hasattr(attr, "h") and attr.w and attr.h:
+                        resolution = f"{attr.w}x{attr.h}"
+            elif msg.photo and hasattr(msg.photo, "sizes") and msg.photo.sizes:
+                largest = msg.photo.sizes[-1]
+                if hasattr(largest, "w") and hasattr(largest, "h") and largest.w and largest.h:
+                    resolution = f"{largest.w}x{largest.h}"
+
             upload_date = msg.date.isoformat() if msg.date else ""
             messages.append(
                 MessageMetadata(
@@ -123,7 +130,11 @@ class TelegramService(BaseService):
                     upload_date=upload_date,
                     download_status="pending",
                     downloaded_bytes=0,
-                    path=None
+                    chat_id=msg.chat_id or 0,
+                    path=None,
+                    file_hash=f"tg_{msg.id}",
+                    duration=duration,
+                    resolution=resolution
                 )
             )
 
