@@ -81,6 +81,14 @@ class MainScreen(Screen):
         table.add_column("Size", key="size")
         table.add_column("Date", key="date")
         
+        # Display Connected User Username in Header Subtitle
+        try:
+            me = await self.browser.client_wrapper.get_me()
+            username = me.get("username") or f"User_{me.get('id', 0)}"
+            self.sub_title = f"Connected as: @{username}"
+        except Exception:
+            self.sub_title = "Connected as: @TelegramUser"
+
         # Restore saved state settings
         self.sort_by = await db.get_setting("sort_by", "message_id")
         self.sort_desc = (await db.get_setting("sort_desc", "true")) == "true"
@@ -100,7 +108,6 @@ class MainScreen(Screen):
         self.set_interval(0.5, self.update_stats_and_jobs)
 
     def on_resize(self) -> None:
-        """Handle terminal window resizing smoothly."""
         self.refresh()
 
     async def action_quit(self) -> None:
