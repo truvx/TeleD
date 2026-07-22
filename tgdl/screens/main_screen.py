@@ -18,20 +18,19 @@ class MainScreen(Screen):
     """Modern btop/LazyGit styled dashboard screen for TeleD."""
 
     BINDINGS = [
-        ("f", "focus_search", "Search"),
-        ("c", "cycle_category", "Category Filter"),
-        ("space", "toggle_selection", "Select"),
+        ("ctrl+p,ctrl+f,f", "focus_search", "Search"),
         ("ctrl+a", "select_all", "Select All"),
-        ("ctrl+d", "clear_selection", "Clear Select"),
+        ("ctrl+d", "clear_selection", "Deselect"),
+        ("ctrl+r,r", "sync_telegram", "Refresh"),
+        ("ctrl+l", "focus_queue", "Queue"),
+        ("ctrl+s,s", "open_settings", "Settings"),
+        ("space", "toggle_selection", "Toggle"),
         ("enter", "download_selected", "Download"),
-        ("p", "toggle_pause_queue", "Pause/Resume Queue"),
+        ("escape", "clear_search", "Back"),
+        ("c", "cycle_category", "Category"),
+        ("p", "toggle_pause_queue", "Pause Queue"),
         ("x", "cancel_queue", "Cancel Queue"),
-        ("alt+r", "retry_failed", "Retry Failed"),
-        ("s", "open_settings", "Settings"),
-        ("delete,backspace", "remove_cache_entry", "Delete Cache"),
-        ("escape", "clear_search", "Esc/Clear"),
-        ("o", "cycle_sorting", "Sort"),
-        ("r", "sync_telegram", "Refresh"),
+        ("alt+r", "retry_failed", "Retry"),
         ("t", "toggle_theme", "Theme"),
         ("q", "quit", "Quit"),
     ]
@@ -65,7 +64,7 @@ class MainScreen(Screen):
         yield Header(show_clock=True)
         with Horizontal(id="main-container"):
             with Vertical(id="left-pane"):
-                yield Input(placeholder="🔍 Type to search... (ESC clear, TAB focus)", id="search-bar")
+                yield Input(placeholder="🔍 Quick Search... (Ctrl+P, ESC clear, TAB focus)", id="search-bar")
                 yield LoadingIndicator(id="sync-spinner")
                 yield DataTable(id="files-table")
             with Vertical(id="right-pane"):
@@ -87,7 +86,6 @@ class MainScreen(Screen):
             self.sub_title = f"Connected as: @{me.get('username') or f'User_{me.get(\"id\", 0)}'}"
         except Exception:
             self.sub_title = "Connected as: @TelegramUser"
-
         self.sort_by = await db.get_setting("sort_by", "message_id")
         self.sort_desc = (await db.get_setting("sort_desc", "true")) == "true"
         saved_search = await db.get_setting("search_query", "")
@@ -99,51 +97,37 @@ class MainScreen(Screen):
         self.downloader.start()
         self.set_interval(0.1, self.update_stats_and_jobs)
 
-    def on_resize(self) -> None:
-        self.refresh()
-
-    async def action_quit(self) -> None:
-        await self.downloader.stop()
-        self.app.exit()
-
-    async def action_focus_search(self) -> None:
-        self.query_one("#search-bar", Input).focus()
-
+    def on_resize(self) -> None: self.refresh()
+    async def action_quit(self) -> None: await self.downloader.stop(); self.app.exit()
+    async def action_focus_search(self) -> None: self.query_one("#search-bar", Input).focus()
+    async def action_focus_queue(self) -> None: self.query_one("#downloads-list", VerticalScroll).focus()
     async def action_clear_search(self) -> None:
         self.query_one("#search-bar", Input).value = ""
         await db.set_setting("search_query", "")
         self.query_one("#files-table", DataTable).focus()
         await self.reload_table()
-
     async def action_toggle_theme(self) -> None:
         self.app.theme = "textual-light" if getattr(self.app, "theme", "textual-dark") == "textual-dark" else "textual-dark"
         await db.set_setting("theme", self.app.theme)
-
     async def action_open_settings(self) -> None:
         self.app.push_screen(SettingsScreen(), lambda saved: asyncio.create_task(self.reload_table()) if saved else None)
-
     async def action_cycle_category(self) -> None:
         self.current_category_idx = (self.current_category_idx + 1) % len(self.categories)
         await self.reload_table()
-
     async def action_cycle_sorting(self) -> None:
         self.sort_by = self.sort_fields[(self.sort_fields.index(self.sort_by) + 1) % len(self.sort_fields)]
         await db.set_setting("sort_by", self.sort_by)
         await db.set_setting("sort_desc", str(self.sort_desc).lower())
         await self.reload_table()
-
     async def action_toggle_pause_queue(self) -> None:
         await (self.downloader.resume_queue() if self.downloader.is_paused else self.downloader.pause_queue())
         await self.reload_table()
-
     async def action_cancel_queue(self) -> None:
         await self.downloader.cancel_queue()
         await self.reload_table()
-
     async def action_retry_failed(self) -> None:
         await self.downloader.retry_failed()
         await self.reload_table()
-
     async def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
         target = {"filename": "filename", "type": "extension", "size": "size", "date": "date", "downloaded": "downloaded"}.get(str(event.column_key.value), "message_id")
         self.sort_desc = not self.sort_desc if self.sort_by == target else True
@@ -169,27 +153,23 @@ class MainScreen(Screen):
             query = search_bar.value.strip() or None
         except Exception:
             search_bar, query = None, None
-
         cat = self.categories[self.current_category_idx]
         messages = await self.browser.load_messages(search_query=query, sort_by=self.sort_by, sort_desc=self.sort_desc, category_filter=cat)
         cnt, total_bytes = await db.get_filtered_totals(search_query=query, category_filter=cat)
         table = self.query_one("#files-table", DataTable)
         table.clear()
-
         cat_label = f"[{cat.upper()}] " if cat else ""
         paused_str = " (PAUSED)" if self.downloader.is_paused else ""
         if search_bar and query:
             search_bar.placeholder = f"🔍 {cat_label}Search ({cnt} items, {format_bytes(total_bytes)}){paused_str}..."
         elif search_bar:
-            search_bar.placeholder = f"🔍 {cat_label}Type to search... (P pause, X cancel, S settings, ESC clear){paused_str}"
-
+            search_bar.placeholder = f"🔍 {cat_label}Quick Search... (Ctrl+P, Ctrl+S Settings, ESC clear){paused_str}"
         for msg in messages:
             badge = get_colored_file_badge(msg.filename, msg.mime_type, msg.extension)
             fn_disp = highlight_text(msg.filename, query) if query else msg.filename
             is_dl = "[bold green]Yes[/]" if msg.download_status == "completed" else "[dim]No[/]"
             st_map = {"completed": "[bold green]Completed[/]", "failed": "[bold red]Failed[/]", "downloading": "[bold yellow]Downloading[/]", "paused": "[bold yellow]Paused[/]"}
             table.add_row("✔" if msg.message_id in self.selected_ids else " ", fn_disp, format_bytes(msg.file_size), badge, msg.upload_date[:10] if msg.upload_date else "", is_dl, st_map.get(msg.download_status, f"[bold cyan]{msg.download_status.title()}[/]"), key=str(msg.message_id))
-
         try:
             self.query_one("#stat-speed", StatCard).update_value(format_bytes(total_bytes))
         except Exception:
