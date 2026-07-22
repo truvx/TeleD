@@ -15,7 +15,7 @@ from tgdl.screens.settings_screen import SettingsScreen
 import tgdl.database as db
 
 class MainScreen(Screen):
-    """Modern btop/LazyGit styled dashboard screen for TeleD with 100k+ file pagination."""
+    """Modern btop/LazyGit styled dashboard screen for TeleD with 100k+ file pagination and robust error handling."""
 
     BINDINGS = [
         ("ctrl+p,ctrl+f,f", "focus_search", "Search"),
@@ -87,16 +87,22 @@ class MainScreen(Screen):
         try:
             me = await self.browser.client_wrapper.get_me()
             self.sub_title = f"Connected as: @{me.get('username') or f'User_{me.get(\"id\", 0)}'}"
-        except Exception:
+        except Exception as e:
             self.sub_title = "Connected as: @TelegramUser"
+            self.app.push_screen(ErrorModal("Connection Notice", str(e), variant="warning"))
 
         self.sort_by = await db.get_setting("sort_by", "message_id")
         self.sort_desc = (await db.get_setting("sort_desc", "true")) == "true"
         saved_search = await db.get_setting("search_query", "")
-        if saved_search:
-            self.query_one("#search-bar", Input).value = saved_search
+        if saved_search: self.query_one("#search-bar", Input).value = saved_search
         self.app.theme = await db.get_setting("theme", "textual-dark")
-        self.downloader.on_failed.append(lambda mid, r: self.app.push_screen(ErrorModal("Download Error", f"Message #{mid} failed: {r}")))
+
+        def handle_download_failure(mid: int, reason: str) -> None:
+            var = "warning" if "Session Expired" in reason or "FloodWait" in reason else "error"
+            title = "Session Error" if "Session Expired" in reason else "Download Failure"
+            self.app.push_screen(ErrorModal(title, f"File #{mid}: {reason}", variant=var))
+        self.downloader.on_failed.append(handle_download_failure)
+
         await self.reload_table()
         self.downloader.start()
         self.set_interval(0.1, self.update_stats_and_jobs)
@@ -166,8 +172,7 @@ class MainScreen(Screen):
         try:
             search_bar = self.query_one("#search-bar", Input)
             query = search_bar.value.strip() or None
-        except Exception:
-            search_bar, query = None, None
+        except Exception: search_bar, query = None, None
         cat = self.categories[self.current_category_idx]
         self.total_count, total_bytes = await db.get_filtered_totals(search_query=query, category_filter=cat)
         max_pages = max(1, (self.total_count + self.page_size - 1) // self.page_size)
@@ -178,20 +183,17 @@ class MainScreen(Screen):
         table = self.query_one("#files-table", DataTable)
         table.clear()
         cat_label, paused_str, page_info = f"[{cat.upper()}] " if cat else "", " (PAUSED)" if self.downloader.is_paused else "", f"Page {self.page}/{max_pages}"
-        if search_bar:
-            search_bar.placeholder = f"🔍 {cat_label}Search ({page_info}, {self.total_count} items, {format_bytes(total_bytes)}){paused_str}..."
+        if search_bar: search_bar.placeholder = f"🔍 {cat_label}Search ({page_info}, {self.total_count} items, {format_bytes(total_bytes)}){paused_str}..."
 
-        st_map = {"completed": "[bold green]Completed[/]", "failed": "[bold red]Failed[/]", "downloading": "[bold yellow]Downloading[/]", "paused": "[bold yellow]Paused[/]"}
+        st_map = {"completed": "[bold green]Completed[/]", "failed": "[bold red]Failed[/]", "downloading": "[bold yellow]Downloading[/]", "paused": "[bold yellow]Paused[/]", "cancelled": "[dim red]Cancelled[/]"}
         for msg in messages:
             badge = get_colored_file_badge(msg.filename, msg.mime_type, msg.extension)
             fn_disp = highlight_text(msg.filename, query) if query else msg.filename
             is_dl = "[bold green]Yes[/]" if msg.download_status == "completed" else "[dim]No[/]"
             table.add_row("✔" if msg.message_id in self.selected_ids else " ", fn_disp, format_bytes(msg.file_size), badge, msg.upload_date[:10] if msg.upload_date else "", is_dl, st_map.get(msg.download_status, f"[bold cyan]{msg.download_status.title()}[/]"), key=str(msg.message_id))
 
-        try:
-            self.query_one("#stat-speed", StatCard).update_value(format_bytes(total_bytes))
-        except Exception:
-            pass
+        try: self.query_one("#stat-speed", StatCard).update_value(format_bytes(total_bytes))
+        except Exception: pass
         await self._update_counters()
 
     async def on_input_changed(self, event: Input.Changed) -> None:
@@ -233,10 +235,8 @@ class MainScreen(Screen):
         target_ids = set(self.selected_ids)
         if not target_ids and table.row_count > 0 and table.cursor_coordinate is not None:
             target_ids.add(int(table.get_row_key_at_index(table.cursor_coordinate.row).value))
-        if not target_ids:
-            return
-        for msg_id in target_ids:
-            await self.downloader.add_to_queue(msg_id)
+        if not target_ids: return
+        for msg_id in target_ids: await self.downloader.add_to_queue(msg_id)
         self.selected_ids.clear()
         await self.reload_table()
 
@@ -247,9 +247,8 @@ class MainScreen(Screen):
             await self.browser.sync_messages()
             await self.reload_table()
         except Exception as e:
-            self.app.push_screen(ErrorModal("Sync Failure", str(e)))
-        finally:
-            spinner.display = False
+            self.app.push_screen(ErrorModal("Sync Failure", str(e), variant="error"))
+        finally: spinner.display = False
 
     async def _update_counters(self) -> None:
         all_msgs = await db.get_cached_messages(limit=100000)
@@ -258,8 +257,7 @@ class MainScreen(Screen):
         q_dl, q_tot = sum(j.downloaded_bytes for j in self.downloader.active_jobs.values()), sum(j.file_size for j in self.downloader.active_jobs.values())
         try:
             self.query_one("#counter-bar", CounterBar).update_counts(selected=len(self.selected_ids), selected_bytes=sel_bytes, downloaded=dl_cnt, queue=q_cnt, queue_downloaded=q_dl, queue_total=q_tot)
-        except Exception:
-            pass
+        except Exception: pass
 
     async def update_stats_and_jobs(self) -> None:
         active_jobs, downloads_list = self.downloader.active_jobs, self.query_one("#downloads-list", VerticalScroll)
@@ -268,8 +266,7 @@ class MainScreen(Screen):
                 widget = DownloadProgressRow(job)
                 self.progress_widgets[msg_id] = widget
                 downloads_list.mount(widget)
-            else:
-                self.progress_widgets[msg_id].update_job(job)
+            else: self.progress_widgets[msg_id].update_job(job)
 
         for msg_id, widget in list(self.progress_widgets.items()):
             if msg_id not in active_jobs:
@@ -281,12 +278,9 @@ class MainScreen(Screen):
                     try:
                         w.remove()
                         self.progress_widgets.pop(mid, None)
-                    except Exception:
-                        pass
+                    except Exception: pass
                 asyncio.create_task(remove_widget(mid, widget))
 
-        try:
-            self.query_one("#stat-active", StatCard).update_value(str(len(active_jobs)))
-        except Exception:
-            pass
+        try: self.query_one("#stat-active", StatCard).update_value(str(len(active_jobs)))
+        except Exception: pass
         await self._update_counters()
