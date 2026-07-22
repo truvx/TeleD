@@ -1,10 +1,11 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 @dataclass
 class MessageMetadata:
     message_id: int
     filename: str
+    extension: str
     file_size: int
     mime_type: str
     upload_date: str

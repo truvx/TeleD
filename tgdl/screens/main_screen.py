@@ -2,7 +2,7 @@ import asyncio
 from typing import Dict, Set
 from textual.app import ComposeResult
 from textual.screen import Screen
-from textual.widgets import Header, Footer, DataTable, Input, Label
+from textual.widgets import Header, Footer, DataTable, Input, Label, LoadingIndicator
 from textual.containers import Horizontal, Vertical, VerticalScroll
 
 from tgdl.browser import Browser
@@ -70,6 +70,12 @@ class MainScreen(Screen):
         border: round $accent;
     }
     
+    #sync-spinner {
+        height: 1;
+        margin-bottom: 1;
+        display: none;
+    }
+
     #files-table {
         height: 1fr;
     }
@@ -103,6 +109,7 @@ class MainScreen(Screen):
         with Horizontal(id="main-container"):
             with Vertical(id="left-pane"):
                 yield Input(placeholder="🔍 Type to search... (Press ESC to clear)", id="search-bar")
+                yield LoadingIndicator(id="sync-spinner")
                 yield DataTable(id="files-table")
             with Vertical(id="right-pane"):
                 with Horizontal(id="stats-row"):
@@ -117,11 +124,12 @@ class MainScreen(Screen):
         table = self.query_one("#files-table", DataTable)
         table.cursor_type = "row"
         
-        # Setup columns per user specifications
+        # Setup columns for Telegram browser
         table.add_column("✔", key="select")
+        table.add_column("ID", key="id")
         table.add_column("Filename", key="filename")
+        table.add_column("Ext", key="ext")
         table.add_column("Size", key="size")
-        table.add_column("Type", key="type")
         table.add_column("Date", key="date")
 
         await self.reload_table()
@@ -163,12 +171,13 @@ class MainScreen(Screen):
         
         for msg in messages:
             sel_text = "✔" if msg.message_id in self.selected_ids else " "
-            file_type = get_file_type(msg.filename, msg.mime_type)
+            ext_label = msg.extension.lstrip(".").upper() if msg.extension else get_file_type(msg.filename, msg.mime_type)
             table.add_row(
                 sel_text,
+                str(msg.message_id),
                 msg.filename,
+                ext_label,
                 format_bytes(msg.file_size),
-                file_type,
                 msg.upload_date[:10] if msg.upload_date else "",
                 key=str(msg.message_id)
             )
@@ -201,7 +210,6 @@ class MainScreen(Screen):
         table = self.query_one("#files-table", DataTable)
         target_ids = set(self.selected_ids)
         
-        # If nothing is explicitly checked, download the focused row
         if not target_ids and table.row_count > 0 and table.cursor_coordinate is not None:
             row_key = table.get_row_key_at_index(table.cursor_coordinate.row)
             target_ids.add(int(row_key.value))
@@ -216,8 +224,14 @@ class MainScreen(Screen):
         await self.reload_table()
 
     async def action_sync_telegram(self) -> None:
-        await self.browser.sync_messages()
-        await self.reload_table()
+        """Asynchronously sync new Telegram messages while showing a loading spinner."""
+        spinner = self.query_one("#sync-spinner", LoadingIndicator)
+        spinner.display = True
+        try:
+            await self.browser.sync_messages()
+            await self.reload_table()
+        finally:
+            spinner.display = False
 
     async def _update_counters(self) -> None:
         all_msgs = await db.get_cached_messages()
@@ -238,7 +252,6 @@ class MainScreen(Screen):
         active_jobs = self.downloader.active_jobs
         downloads_list = self.query_one("#downloads-list", VerticalScroll)
         
-        # Mount new jobs and update active ones
         for msg_id, job in list(active_jobs.items()):
             if msg_id not in self.progress_widgets:
                 widget = DownloadProgressRow(job)
@@ -247,7 +260,6 @@ class MainScreen(Screen):
             else:
                 self.progress_widgets[msg_id].update_job(job)
 
-        # Remove finished jobs
         for msg_id, widget in list(self.progress_widgets.items()):
             if msg_id not in active_jobs:
                 msg_row = await db.get_message(msg_id)
@@ -272,7 +284,6 @@ class MainScreen(Screen):
                             pass
                     asyncio.create_task(remove_widget(msg_id, widget))
 
-        # Update statistics cards
         total_speed = sum(job.speed for job in active_jobs.values())
         try:
             self.query_one("#stat-speed", StatCard).update_value(format_speed(total_speed))

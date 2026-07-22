@@ -1,6 +1,6 @@
 import asyncio
 import os
-from typing import AsyncGenerator, List, Optional
+from typing import List, Optional
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 from telethon.tl.types import MessageMediaWebPage
@@ -12,7 +12,7 @@ class TelegramClientWrapper:
         self.client: Optional[TelegramClient] = None
 
     async def connect(self) -> bool:
-        """Initialize and connect the client."""
+        """Initialize and connect the client using existing session file."""
         if not API_ID or not API_HASH:
             raise ValueError("TELEGRAM_API_ID and TELEGRAM_API_HASH must be configured.")
         
@@ -27,7 +27,7 @@ class TelegramClientWrapper:
         return await self.client.is_user_authorized()
 
     async def authorize_interactive(self) -> None:
-        """Execute a console interactive sign-in flow."""
+        """Execute a console interactive sign-in flow if session is not active."""
         if not self.client:
             raise RuntimeError("Client not connected.")
         
@@ -45,37 +45,43 @@ class TelegramClientWrapper:
         print("Successfully authorized! Session saved.")
 
     async def fetch_media_messages(self, min_id: int = 0) -> List[MessageMetadata]:
-        """Fetch media/document messages from Saved Messages since min_id."""
+        """Fetch metadata ONLY for media messages in Saved Messages ('me') since min_id."""
         if not self.client:
             raise RuntimeError("Client not connected.")
             
         messages: List[MessageMetadata] = []
         # 'me' refers to the user's own "Saved Messages" chat
         async for msg in self.client.iter_messages("me", min_id=min_id):
-            # Ignore messages without media, or with webpage media (e.g. link previews)
+            # Ignore messages without downloadable media or link previews
             if not msg.media or isinstance(msg.media, MessageMediaWebPage):
                 continue
             
-            # Use Telethon file helper to extract metadata
             file_helper = msg.file
             if not file_helper:
                 continue
 
-            # Resolve filename. Generate a name if empty (e.g. photos/voice memos)
+            # Extract extension
+            ext = (file_helper.ext or "").lower()
             filename = file_helper.name
+
             if not filename:
-                ext = file_helper.ext or ""
                 if msg.photo:
                     filename = f"photo_{msg.id}{ext or '.jpg'}"
+                    ext = ext or ".jpg"
                 else:
                     filename = f"media_{msg.id}{ext or '.bin'}"
+                    ext = ext or ".bin"
 
-            # Format status, date
+            if not ext and "." in filename:
+                ext = "." + filename.rsplit(".", 1)[-1].lower()
+
             upload_date = msg.date.isoformat() if msg.date else ""
             
+            # Store metadata ONLY (no media bytes are downloaded during browse)
             metadata = MessageMetadata(
                 message_id=msg.id,
                 filename=filename,
+                extension=ext,
                 file_size=file_helper.size or 0,
                 mime_type=file_helper.mime_type or "application/octet-stream",
                 upload_date=upload_date,

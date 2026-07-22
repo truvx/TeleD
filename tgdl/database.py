@@ -14,6 +14,7 @@ def _init_db_sync() -> None:
             CREATE TABLE IF NOT EXISTS messages (
                 message_id INTEGER PRIMARY KEY,
                 filename TEXT NOT NULL,
+                extension TEXT NOT NULL DEFAULT '',
                 file_size INTEGER NOT NULL,
                 mime_type TEXT NOT NULL,
                 upload_date TEXT NOT NULL,
@@ -22,6 +23,11 @@ def _init_db_sync() -> None:
                 path TEXT
             )
         """)
+        # Safe migration if table exists without extension column
+        cursor = conn.execute("PRAGMA table_info(messages)")
+        cols = [row[1] for row in cursor.fetchall()]
+        if "extension" not in cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN extension TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
 async def init_db() -> None:
@@ -32,12 +38,13 @@ def _cache_messages_sync(messages: List[MessageMetadata]) -> None:
     with sqlite3.connect(DATABASE_PATH) as conn:
         conn.executemany("""
             INSERT OR REPLACE INTO messages 
-            (message_id, filename, file_size, mime_type, upload_date, download_status, downloaded_bytes, path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (message_id, filename, extension, file_size, mime_type, upload_date, download_status, downloaded_bytes, path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [
             (
                 m.message_id,
                 m.filename,
+                m.extension,
                 m.file_size,
                 m.mime_type,
                 m.upload_date,
@@ -60,19 +67,18 @@ def _get_cached_messages_sync(
     sort_by: str = "message_id",
     sort_desc: bool = True
 ) -> List[MessageMetadata]:
-    # Validate sort column to avoid SQL injection
-    valid_cols = {"message_id", "filename", "file_size", "upload_date", "download_status"}
+    valid_cols = {"message_id", "filename", "extension", "file_size", "upload_date", "download_status"}
     if sort_by not in valid_cols:
         sort_by = "message_id"
     
     direction = "DESC" if sort_desc else "ASC"
-    query = "SELECT message_id, filename, file_size, mime_type, upload_date, download_status, downloaded_bytes, path FROM messages"
+    query = "SELECT message_id, filename, extension, file_size, mime_type, upload_date, download_status, downloaded_bytes, path FROM messages"
     params = []
     
     if search_query:
-        query += " WHERE filename LIKE ? OR mime_type LIKE ?"
+        query += " WHERE filename LIKE ? OR mime_type LIKE ? OR extension LIKE ?"
         term = f"%{search_query}%"
-        params = [term, term]
+        params = [term, term, term]
         
     query += f" ORDER BY {sort_by} {direction}"
     
@@ -85,6 +91,7 @@ def _get_cached_messages_sync(
         MessageMetadata(
             message_id=row["message_id"],
             filename=row["filename"],
+            extension=row["extension"],
             file_size=row["file_size"],
             mime_type=row["mime_type"],
             upload_date=row["upload_date"],
@@ -144,7 +151,7 @@ def _get_message_sync(message_id: int) -> Optional[MessageMetadata]:
     with sqlite3.connect(DATABASE_PATH) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT message_id, filename, file_size, mime_type, upload_date, download_status, downloaded_bytes, path FROM messages WHERE message_id = ?",
+            "SELECT message_id, filename, extension, file_size, mime_type, upload_date, download_status, downloaded_bytes, path FROM messages WHERE message_id = ?",
             (message_id,)
         ).fetchone()
         if not row:
@@ -152,6 +159,7 @@ def _get_message_sync(message_id: int) -> Optional[MessageMetadata]:
         return MessageMetadata(
             message_id=row["message_id"],
             filename=row["filename"],
+            extension=row["extension"],
             file_size=row["file_size"],
             mime_type=row["mime_type"],
             upload_date=row["upload_date"],
