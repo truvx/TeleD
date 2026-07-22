@@ -1,7 +1,8 @@
 import sqlite3
 import os
 import asyncio
-from typing import List, Optional
+from datetime import datetime
+from typing import List, Optional, Dict, Any
 from tgdl.config import DATABASE_PATH
 from tgdl.models import MessageMetadata
 
@@ -23,7 +24,16 @@ def _init_db_sync() -> None:
                 path TEXT
             )
         """)
-        # Safe migration if table exists without extension column
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS download_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL,
+                filename TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                completed_at TEXT NOT NULL,
+                path TEXT NOT NULL
+            )
+        """)
         cursor = conn.execute("PRAGMA table_info(messages)")
         cols = [row[1] for row in cursor.fetchall()]
         if "extension" not in cols:
@@ -57,7 +67,6 @@ def _cache_messages_sync(messages: List[MessageMetadata]) -> None:
         conn.commit()
 
 async def cache_messages(messages: List[MessageMetadata]) -> None:
-    """Batch cache messages to SQLite."""
     if not messages:
         return
     await asyncio.to_thread(_cache_messages_sync, messages)
@@ -107,7 +116,6 @@ async def get_cached_messages(
     sort_by: str = "message_id",
     sort_desc: bool = True
 ) -> List[MessageMetadata]:
-    """Retrieve filtered and sorted messages from cache."""
     return await asyncio.to_thread(_get_cached_messages_sync, search_query, sort_by, sort_desc)
 
 def _update_download_status_sync(
@@ -135,8 +143,19 @@ async def update_download_status(
     downloaded_bytes: int,
     path: Optional[str] = None
 ) -> None:
-    """Update status, downloaded bytes and storage path for a message."""
     await asyncio.to_thread(_update_download_status_sync, message_id, status, downloaded_bytes, path)
+
+def _record_download_history_sync(message_id: int, filename: str, file_size: int, path: str) -> None:
+    with sqlite3.connect(DATABASE_PATH) as conn:
+        now = datetime.now().isoformat()
+        conn.execute(
+            "INSERT INTO download_history (message_id, filename, file_size, completed_at, path) VALUES (?, ?, ?, ?, ?)",
+            (message_id, filename, file_size, now, path)
+        )
+        conn.commit()
+
+async def record_download_history(message_id: int, filename: str, file_size: int, path: str) -> None:
+    await asyncio.to_thread(_record_download_history_sync, message_id, filename, file_size, path)
 
 def _get_max_message_id_sync() -> int:
     with sqlite3.connect(DATABASE_PATH) as conn:
@@ -144,7 +163,6 @@ def _get_max_message_id_sync() -> int:
         return row[0] if row and row[0] is not None else 0
 
 async def get_max_message_id() -> int:
-    """Get the highest cached message ID."""
     return await asyncio.to_thread(_get_max_message_id_sync)
 
 def _get_message_sync(message_id: int) -> Optional[MessageMetadata]:
@@ -169,14 +187,13 @@ def _get_message_sync(message_id: int) -> Optional[MessageMetadata]:
         )
 
 async def get_message(message_id: int) -> Optional[MessageMetadata]:
-    """Retrieve metadata for a specific message by its ID."""
     return await asyncio.to_thread(_get_message_sync, message_id)
 
 def _clear_cache_sync() -> None:
     with sqlite3.connect(DATABASE_PATH) as conn:
         conn.execute("DELETE FROM messages")
+        conn.execute("DELETE FROM download_history")
         conn.commit()
 
 async def clear_cache() -> None:
-    """Delete all cached messages."""
     await asyncio.to_thread(_clear_cache_sync)

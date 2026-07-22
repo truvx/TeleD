@@ -23,3 +23,6 @@ class DownloadJob:
     speed: float = 0.0      # Bytes per second
     eta: float = 0.0        # Seconds remaining
     progress: float = 0.0   # 0.0 to 100.0
+    retries: int = 0
+    max_retries: int = 5
+    error_msg: Optional[str] = None

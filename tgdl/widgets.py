@@ -5,8 +5,15 @@ from textual.containers import Horizontal, Vertical
 from tgdl.models import DownloadJob
 from tgdl.utils.helpers import format_bytes, format_speed, format_eta
 
+def make_ascii_bar(percentage: float, width: int = 20) -> str:
+    """Generate a clean block progress bar (e.g., █████████████░░░░░░░)."""
+    p = max(0.0, min(100.0, percentage))
+    filled = int(width * (p / 100.0))
+    filled = max(0, min(width, filled))
+    return "█" * filled + "░" * (width - filled)
+
 class DownloadProgressRow(Widget):
-    """A custom widget displaying the progress of an active file download with a LazyGit/btop aesthetic."""
+    """A custom widget displaying the progress of an active file download with a Rich/btop aesthetic."""
     
     DEFAULT_CSS = """
     DownloadProgressRow {
@@ -39,11 +46,11 @@ class DownloadProgressRow(Widget):
         text-style: bold;
         width: auto;
     }
-    
-    DownloadProgressRow ProgressBar {
-        width: 100%;
-        margin: 0;
+
+    DownloadProgressRow .progress-text {
         height: 1;
+        color: $accent-lighten-2;
+        text-style: bold;
     }
     
     DownloadProgressRow .stats {
@@ -61,28 +68,21 @@ class DownloadProgressRow(Widget):
         with Horizontal(classes="header"):
             yield Label(self.job.filename, classes="filename")
             yield Label(self.job.status.upper(), id="status-badge", classes="status-badge")
-        yield ProgressBar(show_eta=False, show_percentage=True, id="progress-bar")
+        yield Label("", id="progress-text-label", classes="progress-text")
         yield Label("", id="stats-label", classes="stats")
 
     def on_mount(self) -> None:
         self.update_job(self.job)
 
     def update_job(self, job: DownloadJob) -> None:
-        """Update the visual state of the progress row."""
         self.job = job
         
-        try:
-            pbar = self.query_one("#progress-bar", ProgressBar)
-            pbar.progress = int(job.progress)
-        except Exception:
-            pass
-
         try:
             badge = self.query_one("#status-badge", Label)
             badge.update(job.status.upper())
             if job.status == "completed":
                 badge.styles.color = "green"
-            elif job.status == "failed":
+            elif "failed" in job.status:
                 badge.styles.color = "red"
             else:
                 badge.styles.color = "$accent"
@@ -90,20 +90,31 @@ class DownloadProgressRow(Widget):
             pass
 
         try:
-            stats = self.query_one("#stats-label", Label)
+            p_label = self.query_one("#progress-text-label", Label)
+            bar = make_ascii_bar(job.progress, width=22)
+            pct = int(job.progress)
             downloaded = format_bytes(job.downloaded_bytes)
             total = format_bytes(job.file_size)
             speed = format_speed(job.speed)
             eta = format_eta(job.eta)
             
+            p_text = f"{bar}  {pct}%  │  {downloaded} / {total}  │  {speed}  │  ETA {eta}"
+            p_label.update(p_text)
+        except Exception:
+            pass
+
+        try:
+            stats = self.query_one("#stats-label", Label)
             if job.status == "completed":
-                text = f"✓ Completed: {total}"
-            elif job.status == "failed":
-                text = "✗ Download failed."
+                text = f"✓ Completed: {format_bytes(job.file_size)}"
+            elif "failed" in job.status:
+                text = f"✗ Failed: {job.error_msg or 'Max retries exceeded'}"
+            elif "retry" in job.status:
+                text = f"⚠ Retrying download... ({job.status})"
             elif job.status == "pending":
-                text = f"⏳ Queued: {total}"
+                text = f"⏳ Queued: {format_bytes(job.file_size)}"
             else:
-                text = f"⬇ {downloaded} / {total}  │  ⚡ {speed}  │  ⏱ ETA: {eta}"
+                text = f"Bytes: {job.downloaded_bytes} / {job.file_size}"
             stats.update(text)
         except Exception:
             pass
@@ -151,7 +162,6 @@ class StatCard(Widget):
         yield Label(self.val, id="stat-val", classes="value")
 
     def update_value(self, new_value: str) -> None:
-        """Update the value displayed in the card."""
         self.val = new_value
         try:
             self.query_one("#stat-val", Label).update(new_value)
