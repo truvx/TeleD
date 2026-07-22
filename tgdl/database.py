@@ -11,32 +11,43 @@ def _init_db_sync() -> None:
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
     with sqlite3.connect(DATABASE_PATH) as conn:
+        # High performance pragmas for 100,000+ files
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
+        conn.execute("PRAGMA cache_size=-64000;")  # 64MB memory cache for SQLite
         
+        # Primary metadata table: files
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS messages (
+            CREATE TABLE IF NOT EXISTS files (
                 message_id INTEGER PRIMARY KEY,
                 filename TEXT NOT NULL,
                 extension TEXT NOT NULL DEFAULT '',
-                file_size INTEGER NOT NULL,
                 mime_type TEXT NOT NULL,
-                upload_date TEXT NOT NULL,
-                download_status TEXT NOT NULL,
-                downloaded_bytes INTEGER DEFAULT 0,
-                path TEXT
+                size INTEGER NOT NULL,
+                date TEXT NOT NULL,
+                chat_id INTEGER NOT NULL DEFAULT 0,
+                downloaded INTEGER NOT NULL DEFAULT 0,
+                local_path TEXT,
+                hash TEXT
             )
         """)
+        
+        # Download queue & execution table: downloads
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS download_history (
+            CREATE TABLE IF NOT EXISTS downloads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 message_id INTEGER NOT NULL,
                 filename TEXT NOT NULL,
-                file_size INTEGER NOT NULL,
-                completed_at TEXT NOT NULL,
-                path TEXT NOT NULL
+                size INTEGER NOT NULL,
+                downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                completed_at TEXT,
+                local_path TEXT
             )
         """)
+
+        # Settings table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -44,11 +55,11 @@ def _init_db_sync() -> None:
             )
         """)
         
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_filename ON messages(filename);")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_extension ON messages(extension);")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_upload_date ON messages(upload_date);")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_file_size ON messages(file_size);")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_download_status ON messages(download_status);")
+        # Performance Indexes for 100,000+ items
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_filename ON files(filename);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_date ON files(date);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_size ON files(size);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_message_id ON files(message_id);")
         conn.commit()
 
 async def init_db() -> None:
@@ -73,20 +84,21 @@ async def get_setting(key: str, default: str = "") -> str:
 def _cache_messages_sync(messages: List[MessageMetadata]) -> None:
     with sqlite3.connect(DATABASE_PATH) as conn:
         conn.executemany("""
-            INSERT OR REPLACE INTO messages 
-            (message_id, filename, extension, file_size, mime_type, upload_date, download_status, downloaded_bytes, path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO files 
+            (message_id, filename, extension, mime_type, size, date, chat_id, downloaded, local_path, hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [
             (
                 m.message_id,
                 m.filename,
                 m.extension,
-                m.file_size,
                 m.mime_type,
+                m.file_size,
                 m.upload_date,
-                m.download_status,
-                m.downloaded_bytes,
-                m.path
+                m.chat_id,
+                1 if m.download_status == "completed" else 0,
+                m.path,
+                m.file_hash
             )
             for m in messages
         ])
@@ -107,20 +119,20 @@ def _get_cached_messages_sync(
     valid_cols = {
         "message_id": "message_id", "id": "message_id",
         "name": "filename", "filename": "filename",
-        "size": "file_size", "file_size": "file_size",
-        "date": "upload_date", "upload_date": "upload_date",
+        "size": "size", "file_size": "size",
+        "date": "date", "upload_date": "date",
         "ext": "extension", "extension": "extension"
     }
     col_name = valid_cols.get(sort_by.lower(), "message_id")
     direction = "DESC" if sort_desc else "ASC"
     
-    query = "SELECT message_id, filename, extension, file_size, mime_type, upload_date, download_status, downloaded_bytes, path FROM messages"
+    query = "SELECT message_id, filename, extension, mime_type, size, date, chat_id, downloaded, local_path, hash FROM files"
     params = []
     
     if search_query:
         q = search_query.strip()
         pattern = q.replace("*", "%").replace("?", "_") if ("*" in q or "?" in q) else f"%{q}%"
-        query += " WHERE filename LIKE ? OR extension LIKE ? OR upload_date LIKE ? OR mime_type LIKE ?"
+        query += " WHERE filename LIKE ? OR extension LIKE ? OR date LIKE ? OR mime_type LIKE ?"
         params = [pattern, pattern, pattern, pattern]
         
     query += f" ORDER BY {col_name} {direction} LIMIT ? OFFSET ?"
@@ -135,12 +147,14 @@ def _get_cached_messages_sync(
             message_id=row["message_id"],
             filename=row["filename"],
             extension=row["extension"],
-            file_size=row["file_size"],
+            file_size=row["size"],
             mime_type=row["mime_type"],
-            upload_date=row["upload_date"],
-            download_status=row["download_status"],
-            downloaded_bytes=row["downloaded_bytes"],
-            path=row["path"]
+            upload_date=row["date"],
+            download_status="completed" if row["downloaded"] == 1 else "pending",
+            downloaded_bytes=row["size"] if row["downloaded"] == 1 else 0,
+            chat_id=row["chat_id"],
+            path=row["local_path"],
+            file_hash=row["hash"]
         )
         for row in rows
     ]
@@ -156,10 +170,17 @@ async def get_cached_messages(
 
 def _update_download_status_sync(message_id: int, status: str, downloaded_bytes: int, path: Optional[str] = None) -> None:
     with sqlite3.connect(DATABASE_PATH) as conn:
+        is_dl = 1 if status == "completed" else 0
         if path is not None:
-            conn.execute("UPDATE messages SET download_status = ?, downloaded_bytes = ?, path = ? WHERE message_id = ?", (status, downloaded_bytes, path, message_id))
+            conn.execute("UPDATE files SET downloaded = ?, local_path = ? WHERE message_id = ?", (is_dl, path, message_id))
         else:
-            conn.execute("UPDATE messages SET download_status = ?, downloaded_bytes = ? WHERE message_id = ?", (status, downloaded_bytes, message_id))
+            conn.execute("UPDATE files SET downloaded = ? WHERE message_id = ?", (is_dl, message_id))
+            
+        now = datetime.now().isoformat()
+        conn.execute(
+            "INSERT INTO downloads (message_id, filename, size, downloaded_bytes, status, completed_at, local_path) SELECT message_id, filename, size, ?, ?, ?, ? FROM files WHERE message_id = ?",
+            (downloaded_bytes, status, now, path or "", message_id)
+        )
         conn.commit()
 
 async def update_download_status(message_id: int, status: str, downloaded_bytes: int, path: Optional[str] = None) -> None:
@@ -167,24 +188,16 @@ async def update_download_status(message_id: int, status: str, downloaded_bytes:
 
 def _delete_cached_message_sync(message_id: int) -> None:
     with sqlite3.connect(DATABASE_PATH) as conn:
-        conn.execute("DELETE FROM messages WHERE message_id = ?", (message_id,))
+        conn.execute("DELETE FROM files WHERE message_id = ?", (message_id,))
+        conn.execute("DELETE FROM downloads WHERE message_id = ?", (message_id,))
         conn.commit()
 
 async def delete_cached_message(message_id: int) -> None:
     await asyncio.to_thread(_delete_cached_message_sync, message_id)
 
-def _record_download_history_sync(message_id: int, filename: str, file_size: int, path: str) -> None:
-    with sqlite3.connect(DATABASE_PATH) as conn:
-        now = datetime.now().isoformat()
-        conn.execute("INSERT INTO download_history (message_id, filename, file_size, completed_at, path) VALUES (?, ?, ?, ?, ?)", (message_id, filename, file_size, now, path))
-        conn.commit()
-
-async def record_download_history(message_id: int, filename: str, file_size: int, path: str) -> None:
-    await asyncio.to_thread(_record_download_history_sync, message_id, filename, file_size, path)
-
 def _get_max_message_id_sync() -> int:
     with sqlite3.connect(DATABASE_PATH) as conn:
-        row = conn.execute("SELECT MAX(message_id) FROM messages").fetchone()
+        row = conn.execute("SELECT MAX(message_id) FROM files").fetchone()
         return row[0] if row and row[0] is not None else 0
 
 async def get_max_message_id() -> int:
@@ -193,19 +206,21 @@ async def get_max_message_id() -> int:
 def _get_message_sync(message_id: int) -> Optional[MessageMetadata]:
     with sqlite3.connect(DATABASE_PATH) as conn:
         conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT message_id, filename, extension, file_size, mime_type, upload_date, download_status, downloaded_bytes, path FROM messages WHERE message_id = ?", (message_id,)).fetchone()
+        row = conn.execute("SELECT message_id, filename, extension, mime_type, size, date, chat_id, downloaded, local_path, hash FROM files WHERE message_id = ?", (message_id,)).fetchone()
         if not row:
             return None
         return MessageMetadata(
             message_id=row["message_id"],
             filename=row["filename"],
             extension=row["extension"],
-            file_size=row["file_size"],
+            file_size=row["size"],
             mime_type=row["mime_type"],
-            upload_date=row["upload_date"],
-            download_status=row["download_status"],
-            downloaded_bytes=row["downloaded_bytes"],
-            path=row["path"]
+            upload_date=row["date"],
+            download_status="completed" if row["downloaded"] == 1 else "pending",
+            downloaded_bytes=row["size"] if row["downloaded"] == 1 else 0,
+            chat_id=row["chat_id"],
+            path=row["local_path"],
+            file_hash=row["hash"]
         )
 
 async def get_message(message_id: int) -> Optional[MessageMetadata]:
@@ -213,8 +228,8 @@ async def get_message(message_id: int) -> Optional[MessageMetadata]:
 
 def _clear_cache_sync() -> None:
     with sqlite3.connect(DATABASE_PATH) as conn:
-        conn.execute("DELETE FROM messages")
-        conn.execute("DELETE FROM download_history")
+        conn.execute("DELETE FROM files")
+        conn.execute("DELETE FROM downloads")
         conn.execute("DELETE FROM settings")
         conn.commit()
 
