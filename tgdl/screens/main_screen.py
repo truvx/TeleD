@@ -86,7 +86,8 @@ class MainScreen(Screen):
             table.add_column(title, key=key)
         try:
             me = await self.browser.client_wrapper.get_me()
-            self.sub_title = f"Connected as: @{me.get('username') or f'User_{me.get(\"id\", 0)}'}"
+            uname = me.get('username') or f"User_{me.get('id', 0)}"
+            self.sub_title = f"Connected as: @{uname}"
         except Exception as e:
             self.sub_title = "Connected as: @TelegramUser"
             self.app.push_screen(ErrorModal("Connection Notice", str(e), variant="warning"))
