@@ -18,8 +18,11 @@ class MainScreen(Screen):
     BINDINGS = [
         ("f", "focus_search", "Search"),
         ("space", "toggle_selection", "Select"),
+        ("ctrl+a", "select_all", "Select All"),
+        ("ctrl+d", "clear_selection", "Clear Select"),
         ("enter", "download_selected", "Download"),
-        ("escape", "clear_search", "Clear Search"),
+        ("delete,backspace", "remove_cache_entry", "Delete Cache"),
+        ("escape", "clear_search", "Esc/Clear"),
         ("o", "cycle_sorting", "Sort"),
         ("r", "sync_telegram", "Refresh"),
         ("t", "toggle_theme", "Theme"),
@@ -55,7 +58,7 @@ class MainScreen(Screen):
         yield Header(show_clock=True)
         with Horizontal(id="main-container"):
             with Vertical(id="left-pane"):
-                yield Input(placeholder="🔍 Type to search... (Supports *.mkv, *.pdf, *.zip, *.iso)", id="search-bar")
+                yield Input(placeholder="🔍 Type to search... (ESC clear, TAB focus)", id="search-bar")
                 yield LoadingIndicator(id="sync-spinner")
                 yield DataTable(id="files-table")
             with Vertical(id="right-pane"):
@@ -148,6 +151,39 @@ class MainScreen(Screen):
             self.selected_ids.add(msg_id)
             table.update_cell(row_key, "select", "✔")
         asyncio.create_task(self._update_counters())
+
+    async def action_select_all(self) -> None:
+        table = self.query_one("#files-table", DataTable)
+        if table.row_count == 0:
+            return
+        all_row_keys = list(table.rows.keys())
+        for key in all_row_keys:
+            msg_id = int(key.value)
+            self.selected_ids.add(msg_id)
+            table.update_cell(key, "select", "✔")
+        await self._update_counters()
+
+    async def action_clear_selection(self) -> None:
+        table = self.query_one("#files-table", DataTable)
+        if table.row_count == 0:
+            return
+        all_row_keys = list(table.rows.keys())
+        for key in all_row_keys:
+            msg_id = int(key.value)
+            self.selected_ids.discard(msg_id)
+            table.update_cell(key, "select", " ")
+        self.selected_ids.clear()
+        await self._update_counters()
+
+    async def action_remove_cache_entry(self) -> None:
+        table = self.query_one("#files-table", DataTable)
+        if table.row_count == 0 or table.cursor_coordinate is None:
+            return
+        row_key = table.get_row_key_at_index(table.cursor_coordinate.row)
+        msg_id = int(row_key.value)
+        await db.delete_cached_message(msg_id)
+        self.selected_ids.discard(msg_id)
+        await self.reload_table()
 
     async def action_download_selected(self) -> None:
         table = self.query_one("#files-table", DataTable)

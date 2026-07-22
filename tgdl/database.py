@@ -95,7 +95,6 @@ def _get_cached_messages_sync(
     
     if search_query:
         q = search_query.strip()
-        # Handle wildcard queries (*.mkv -> %.mkv, test? -> test_)
         if "*" in q or "?" in q:
             pattern = q.replace("*", "%").replace("?", "_")
         else:
@@ -159,6 +158,14 @@ async def update_download_status(
     path: Optional[str] = None
 ) -> None:
     await asyncio.to_thread(_update_download_status_sync, message_id, status, downloaded_bytes, path)
+
+def _delete_cached_message_sync(message_id: int) -> None:
+    with sqlite3.connect(DATABASE_PATH) as conn:
+        conn.execute("DELETE FROM messages WHERE message_id = ?", (message_id,))
+        conn.commit()
+
+async def delete_cached_message(message_id: int) -> None:
+    await asyncio.to_thread(_delete_cached_message_sync, message_id)
 
 def _record_download_history_sync(message_id: int, filename: str, file_size: int, path: str) -> None:
     with sqlite3.connect(DATABASE_PATH) as conn:
