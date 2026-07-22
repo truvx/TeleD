@@ -23,3 +23,32 @@ def format_eta(seconds: float) -> str:
     if h > 0:
         return f"{h:02d}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
+
+def get_file_type(filename: str, mime_type: str = "") -> str:
+    """Return a short clean upper-case extension or file category (e.g., MP4, PDF)."""
+    if filename and "." in filename:
+        ext = filename.rsplit(".", 1)[-1].upper()
+        if 1 <= len(ext) <= 5:
+            return ext
+            
+    if mime_type:
+        if "/" in mime_type:
+            sub = mime_type.split("/", 1)[-1].upper()
+            if "JPEG" in sub or "JPG" in sub:
+                return "JPG"
+            if "PNG" in sub:
+                return "PNG"
+            if "MP4" in sub or "VIDEO" in sub:
+                return "MP4"
+            if "PDF" in sub:
+                return "PDF"
+            if len(sub) <= 5:
+                return sub
+        if "image" in mime_type:
+            return "IMG"
+        if "video" in mime_type:
+            return "VID"
+        if "audio" in mime_type:
+            return "AUD"
+
+    return "FILE"

@@ -1,34 +1,34 @@
 import asyncio
-import os
 from typing import Dict, Set
 from textual.app import ComposeResult
 from textual.screen import Screen
 from textual.widgets import Header, Footer, DataTable, Input, Label
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.coordinate import Coordinate
 
 from tgdl.browser import Browser
 from tgdl.downloader import Downloader
-from tgdl.widgets import DownloadProgressRow, StatCard
+from tgdl.widgets import DownloadProgressRow, StatCard, CounterBar
 from tgdl.models import DownloadJob
-from tgdl.utils.helpers import format_bytes, format_speed
+from tgdl.utils.helpers import format_bytes, format_speed, get_file_type
 import tgdl.database as db
 
 class MainScreen(Screen):
-    """The main dashboard screen displaying the file browser and download queue."""
+    """Modern btop/LazyGit styled dashboard screen for TeleD."""
 
     BINDINGS = [
-        ("s", "toggle_selection", "Select/Deselect"),
-        ("a", "toggle_select_all", "Select/Deselect All"),
-        ("d", "download_selected", "Download Selected"),
-        ("r", "sync_telegram", "Refresh Files"),
-        ("o", "cycle_sorting", "Cycle Sort"),
-        ("q", "quit", "Quit")
+        ("f", "focus_search", "Search"),
+        ("space", "toggle_selection", "Select"),
+        ("enter", "download_selected", "Download"),
+        ("escape", "clear_search", "Clear Search"),
+        ("r", "sync_telegram", "Refresh"),
+        ("t", "toggle_theme", "Theme"),
+        ("q", "quit", "Quit"),
     ]
 
     DEFAULT_CSS = """
     MainScreen {
         background: $background;
+        layout: vertical;
     }
     
     #main-container {
@@ -37,42 +37,55 @@ class MainScreen(Screen):
     }
     
     #left-pane {
-        width: 60%;
+        width: 62%;
         height: 100%;
-        border-right: vline $primary-muted;
-        padding: 1;
+        border: round $primary;
+        padding: 0 1;
         layout: vertical;
     }
     
+    #left-pane:focus-within {
+        border: round $accent;
+    }
+
     #right-pane {
-        width: 40%;
+        width: 38%;
         height: 100%;
-        padding: 1;
+        border: round $primary;
+        padding: 0 1;
         layout: vertical;
+    }
+
+    #right-pane:focus-within {
+        border: round $accent;
     }
     
     #search-bar {
-        margin-bottom: 1;
+        margin: 0 0 1 0;
+        height: 3;
+        border: round $primary-muted;
     }
     
-    #sort-label {
-        margin-bottom: 1;
-        color: $accent;
-        text-style: bold;
-        height: 1;
+    #search-bar:focus {
+        border: round $accent;
     }
     
+    #files-table {
+        height: 1fr;
+    }
+
     #stats-row {
         layout: horizontal;
-        height: 6;
+        height: 4;
         margin-bottom: 1;
     }
     
     #downloads-list {
-        border: tall $primary-muted;
-        background: $background-lighten-1;
+        background: $surface;
+        border: round $primary-muted;
         height: 1fr;
         overflow-y: scroll;
+        padding: 1;
     }
     """
 
@@ -82,53 +95,57 @@ class MainScreen(Screen):
         self.downloader = downloader
         self.selected_ids: Set[int] = set()
         self.progress_widgets: Dict[int, DownloadProgressRow] = {}
-        
-        # Sorting state
         self.sort_by = "message_id"
         self.sort_desc = True
-        self.sort_fields = ["message_id", "filename", "file_size", "upload_date"]
-        self.sort_names = {"message_id": "ID", "filename": "Name", "file_size": "Size", "upload_date": "Date"}
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Header(show_clock=True)
         with Horizontal(id="main-container"):
             with Vertical(id="left-pane"):
-                yield Input(placeholder="Search by filename or mime...", id="search-bar")
-                yield Label("Sorting: ID (Desc)", id="sort-label")
+                yield Input(placeholder="🔍 Type to search... (Press ESC to clear)", id="search-bar")
                 yield DataTable(id="files-table")
             with Vertical(id="right-pane"):
                 with Horizontal(id="stats-row"):
-                    yield StatCard("Queue Size", "0", id="stat-queue")
-                    yield StatCard("Total Speed", "0 B/s", id="stat-speed")
+                    yield StatCard("Active Speed", "0 B/s", id="stat-speed")
+                    yield StatCard("Active Jobs", "0", id="stat-active")
                 with VerticalScroll(id="downloads-list"):
                     pass
+        yield CounterBar(id="counter-bar")
         yield Footer()
 
     async def on_mount(self) -> None:
         table = self.query_one("#files-table", DataTable)
         table.cursor_type = "row"
         
-        # Setup table headers
-        table.add_column("[ ]", key="select")
-        table.add_column("ID", key="id")
+        # Setup columns per user specifications
+        table.add_column("✔", key="select")
         table.add_column("Filename", key="filename")
         table.add_column("Size", key="size")
-        table.add_column("Status", key="status")
+        table.add_column("Type", key="type")
         table.add_column("Date", key="date")
 
         await self.reload_table()
-        
-        # Start downloader and periodic UI updates
         self.downloader.start()
         self.set_interval(0.5, self.update_stats_and_jobs)
 
     async def action_quit(self) -> None:
-        """Gracefully stop background jobs and exit."""
         await self.downloader.stop()
         self.app.exit()
 
+    async def action_focus_search(self) -> None:
+        self.query_one("#search-bar", Input).focus()
+
+    async def action_clear_search(self) -> None:
+        search_bar = self.query_one("#search-bar", Input)
+        search_bar.value = ""
+        self.query_one("#files-table", DataTable).focus()
+        await self.reload_table()
+
+    async def action_toggle_theme(self) -> None:
+        current = getattr(self.app, "theme", "textual-dark")
+        self.app.theme = "textual-light" if current == "textual-dark" else "textual-dark"
+
     async def reload_table(self) -> None:
-        """Fetch and reload table items based on current search/sorting state."""
         try:
             search_bar = self.query_one("#search-bar", Input)
             query = search_bar.value.strip() or None
@@ -145,32 +162,24 @@ class MainScreen(Screen):
         table.clear()
         
         for msg in messages:
-            sel_text = "[x]" if msg.message_id in self.selected_ids else "[ ]"
+            sel_text = "✔" if msg.message_id in self.selected_ids else " "
+            file_type = get_file_type(msg.filename, msg.mime_type)
             table.add_row(
                 sel_text,
-                str(msg.message_id),
                 msg.filename,
                 format_bytes(msg.file_size),
-                msg.download_status.capitalize(),
+                file_type,
                 msg.upload_date[:10] if msg.upload_date else "",
                 key=str(msg.message_id)
             )
-
-        # Update sort label description
-        sort_name = self.sort_names.get(self.sort_by, "ID")
-        direction = "Desc" if self.sort_desc else "Asc"
-        try:
-            self.query_one("#sort-label", Label).update(f"Sorting: {sort_name} ({direction}) | Count: {len(messages)}")
-        except Exception:
-            pass
+            
+        await self._update_counters()
 
     async def on_input_changed(self, event: Input.Changed) -> None:
-        """Triggered when the search query changes."""
         if event.input.id == "search-bar":
             await self.reload_table()
 
     def action_toggle_selection(self) -> None:
-        """Toggle selection state for the currently focused row."""
         table = self.query_one("#files-table", DataTable)
         if table.row_count == 0 or table.cursor_coordinate is None:
             return
@@ -181,73 +190,52 @@ class MainScreen(Screen):
         
         if msg_id in self.selected_ids:
             self.selected_ids.remove(msg_id)
-            table.update_cell(row_key, "select", "[ ]")
+            table.update_cell(row_key, "select", " ")
         else:
             self.selected_ids.add(msg_id)
-            table.update_cell(row_key, "select", "[x]")
-
-    def action_toggle_select_all(self) -> None:
-        """Toggle select-all or deselect-all for currently displayed files."""
-        table = self.query_one("#files-table", DataTable)
-        if table.row_count == 0:
-            return
+            table.update_cell(row_key, "select", "✔")
             
-        all_row_keys = list(table.rows.keys())
-        displayed_ids = {int(key.value) for key in all_row_keys}
-        
-        if displayed_ids.issubset(self.selected_ids):
-            # Deselect all displayed
-            for key in all_row_keys:
-                msg_id = int(key.value)
-                self.selected_ids.discard(msg_id)
-                table.update_cell(key, "select", "[ ]")
-        else:
-            # Select all displayed
-            for key in all_row_keys:
-                msg_id = int(key.value)
-                self.selected_ids.add(msg_id)
-                table.update_cell(key, "select", "[x]")
+        asyncio.create_task(self._update_counters())
 
     async def action_download_selected(self) -> None:
-        """Add all selected messages to the downloader queue."""
-        if not self.selected_ids:
+        table = self.query_one("#files-table", DataTable)
+        target_ids = set(self.selected_ids)
+        
+        # If nothing is explicitly checked, download the focused row
+        if not target_ids and table.row_count > 0 and table.cursor_coordinate is not None:
+            row_key = table.get_row_key_at_index(table.cursor_coordinate.row)
+            target_ids.add(int(row_key.value))
+            
+        if not target_ids:
             return
             
-        for msg_id in list(self.selected_ids):
+        for msg_id in target_ids:
             await self.downloader.add_to_queue(msg_id)
             
         self.selected_ids.clear()
         await self.reload_table()
 
     async def action_sync_telegram(self) -> None:
-        """Fetch and cache any new messages since the last sync."""
-        sort_lbl = self.query_one("#sort-label", Label)
-        sort_lbl.update("Syncing with Telegram...")
-        
-        new_count = await self.browser.sync_messages()
-        await self.reload_table()
-        
-        # Reset notice
-        sort_lbl.update(f"Sync complete. Found {new_count} new messages.")
-        await asyncio.sleep(2)
+        await self.browser.sync_messages()
         await self.reload_table()
 
-    async def action_cycle_sorting(self) -> None:
-        """Cycle through the sorting columns."""
-        current_idx = self.sort_fields.index(self.sort_by)
-        next_idx = (current_idx + 1) % len(self.sort_fields)
-        self.sort_by = self.sort_fields[next_idx]
+    async def _update_counters(self) -> None:
+        all_msgs = await db.get_cached_messages()
+        downloaded_count = sum(1 for m in all_msgs if m.download_status == "completed")
+        queue_count = self.downloader.queue.qsize() + len(self.downloader.queued_ids)
         
-        # Toggle direction or keep DESC as default
-        self.sort_desc = True if self.sort_by in ("message_id", "upload_date", "file_size") else False
-        await self.reload_table()
+        try:
+            cbar = self.query_one("#counter-bar", CounterBar)
+            cbar.update_counts(
+                selected=len(self.selected_ids),
+                downloaded=downloaded_count,
+                queue=queue_count
+            )
+        except Exception:
+            pass
 
     async def update_stats_and_jobs(self) -> None:
-        """Refresh active download stats, queue cards, and update cells."""
         active_jobs = self.downloader.active_jobs
-        table = self.query_one("#files-table", DataTable)
-        
-        # 1. Update active progress row widgets
         downloads_list = self.query_one("#downloads-list", VerticalScroll)
         
         # Mount new jobs and update active ones
@@ -258,27 +246,12 @@ class MainScreen(Screen):
                 downloads_list.mount(widget)
             else:
                 self.progress_widgets[msg_id].update_job(job)
-                
-            # Update DataTable status column
-            try:
-                table.update_cell(str(msg_id), "status", f"Downloading ({int(job.progress)}%)")
-            except Exception:
-                pass
 
-        # Handle finished jobs
+        # Remove finished jobs
         for msg_id, widget in list(self.progress_widgets.items()):
             if msg_id not in active_jobs:
-                # Refresh status in table from SQLite
                 msg_row = await db.get_message(msg_id)
-                if msg_row:
-                    try:
-                        table.update_cell(str(msg_id), "status", msg_row.download_status.capitalize())
-                    except Exception:
-                        pass
-                
-                # Check if it transitioned to finished and schedule removal
                 if widget.job.status == "downloading":
-                    # Update widget one last time to complete state
                     if msg_row:
                         job_copy = DownloadJob(
                             message_id=msg_id,
@@ -290,9 +263,8 @@ class MainScreen(Screen):
                         )
                         widget.update_job(job_copy)
 
-                    # Delayed removal helper
                     async def remove_widget(mid: int, w: DownloadProgressRow) -> None:
-                        await asyncio.sleep(4)
+                        await asyncio.sleep(3)
                         try:
                             w.remove()
                             self.progress_widgets.pop(mid, None)
@@ -300,12 +272,12 @@ class MainScreen(Screen):
                             pass
                     asyncio.create_task(remove_widget(msg_id, widget))
 
-        # 2. Update metrics
+        # Update statistics cards
         total_speed = sum(job.speed for job in active_jobs.values())
-        queue_count = self.downloader.queue.qsize() + len(self.downloader.queued_ids)
-        
         try:
-            self.query_one("#stat-queue", StatCard).update_value(str(queue_count))
             self.query_one("#stat-speed", StatCard).update_value(format_speed(total_speed))
+            self.query_one("#stat-active", StatCard).update_value(str(len(active_jobs)))
         except Exception:
             pass
+            
+        await self._update_counters()

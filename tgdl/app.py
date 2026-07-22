@@ -13,6 +13,7 @@ from tgdl.screens.main_screen import MainScreen
 class TeleDApp(App):
     """The main Textual application class for TeleD."""
     TITLE = "TeleD - Telegram Downloader"
+    theme = "textual-dark"
     
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)

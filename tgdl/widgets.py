@@ -6,20 +6,25 @@ from tgdl.models import DownloadJob
 from tgdl.utils.helpers import format_bytes, format_speed, format_eta
 
 class DownloadProgressRow(Widget):
-    """A custom widget displaying the progress of an active file download."""
+    """A custom widget displaying the progress of an active file download with a LazyGit/btop aesthetic."""
     
     DEFAULT_CSS = """
     DownloadProgressRow {
         layout: vertical;
-        background: $panel;
-        border: tall $primary-muted;
-        margin: 0 1 1 1;
-        padding: 1;
+        background: $surface;
+        border: round $primary;
+        margin: 0 0 1 0;
+        padding: 0 1;
         height: auto;
     }
     
+    DownloadProgressRow:hover {
+        border: round $accent;
+    }
+
     DownloadProgressRow .header {
         height: 1;
+        margin-top: 0;
         margin-bottom: 0;
     }
     
@@ -31,12 +36,13 @@ class DownloadProgressRow(Widget):
     
     DownloadProgressRow .status-badge {
         color: $accent;
+        text-style: bold;
         width: auto;
     }
     
     DownloadProgressRow ProgressBar {
         width: 100%;
-        margin: 1 0;
+        margin: 0;
         height: 1;
     }
     
@@ -65,18 +71,15 @@ class DownloadProgressRow(Widget):
         """Update the visual state of the progress row."""
         self.job = job
         
-        # Update progress bar (0.0 to 100.0)
         try:
             pbar = self.query_one("#progress-bar", ProgressBar)
             pbar.progress = int(job.progress)
         except Exception:
             pass
 
-        # Update status badge
         try:
             badge = self.query_one("#status-badge", Label)
             badge.update(job.status.upper())
-            # Color active downloading accent, completed green, failed red
             if job.status == "completed":
                 badge.styles.color = "green"
             elif job.status == "failed":
@@ -86,7 +89,6 @@ class DownloadProgressRow(Widget):
         except Exception:
             pass
 
-        # Update stats text
         try:
             stats = self.query_one("#stats-label", Label)
             downloaded = format_bytes(job.downloaded_bytes)
@@ -95,44 +97,47 @@ class DownloadProgressRow(Widget):
             eta = format_eta(job.eta)
             
             if job.status == "completed":
-                text = f"Finished: {total}"
+                text = f"✓ Completed: {total}"
             elif job.status == "failed":
-                text = "Download failed."
+                text = "✗ Download failed."
             elif job.status == "pending":
-                text = f"Queued: {total}"
+                text = f"⏳ Queued: {total}"
             else:
-                text = f"{downloaded} / {total} | {speed} | ETA: {eta}"
+                text = f"⬇ {downloaded} / {total}  │  ⚡ {speed}  │  ⏱ ETA: {eta}"
             stats.update(text)
         except Exception:
             pass
 
 
 class StatCard(Widget):
-    """A simple widget to display a single metric in a styled block."""
+    """A metric card with clean LazyGit borders."""
     
     DEFAULT_CSS = """
     StatCard {
         background: $panel;
-        border: solid $surface-lighten-2;
-        padding: 1;
-        height: 6;
-        min-width: 15;
+        border: round $primary-muted;
+        padding: 0 1;
+        height: 4;
+        min-width: 14;
         margin: 0 1;
     }
     
+    StatCard:hover {
+        border: round $accent;
+    }
+
     StatCard .title {
         color: $text-muted;
-        font-size: 85%;
+        font-size: 80%;
         text-style: uppercase;
         height: 1;
     }
     
     StatCard .value {
-        color: $primary;
+        color: $accent;
         text-style: bold;
-        font-size: 130%;
-        margin-top: 1;
-        height: 2;
+        font-size: 110%;
+        height: 1;
     }
     """
 
@@ -150,5 +155,47 @@ class StatCard(Widget):
         self.val = new_value
         try:
             self.query_one("#stat-val", Label).update(new_value)
+        except Exception:
+            pass
+
+
+class CounterBar(Widget):
+    """Bottom status bar displaying selection, downloaded, and queue counts."""
+
+    DEFAULT_CSS = """
+    CounterBar {
+        layout: horizontal;
+        background: $surface;
+        border-top: solid $primary-muted;
+        height: 1;
+        padding: 0 1;
+        color: $text;
+    }
+    
+    CounterBar .item {
+        margin-right: 2;
+        text-style: bold;
+    }
+    """
+
+    def __init__(self, selected: int = 0, downloaded: int = 0, queue: int = 0, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.selected = selected
+        self.downloaded = downloaded
+        self.queue = queue
+
+    def compose(self) -> ComposeResult:
+        yield Label(f"Selected: {self.selected}", id="cnt-selected", classes="item")
+        yield Label(f"Downloaded: {self.downloaded}", id="cnt-downloaded", classes="item")
+        yield Label(f"Queue: {self.queue}", id="cnt-queue", classes="item")
+
+    def update_counts(self, selected: int, downloaded: int, queue: int) -> None:
+        self.selected = selected
+        self.downloaded = downloaded
+        self.queue = queue
+        try:
+            self.query_one("#cnt-selected", Label).update(f"Selected: [bold cyan]{selected}[/]")
+            self.query_one("#cnt-downloaded", Label).update(f"Downloaded: [bold green]{downloaded}[/]")
+            self.query_one("#cnt-queue", Label).update(f"Queue: [bold yellow]{queue}[/]")
         except Exception:
             pass
