@@ -3,6 +3,9 @@ import os
 import time
 from typing import Callable, Dict, List, Optional
 import aiofiles
+from telethon.errors.rpcerrorlist import FloodWaitError
+from telethon.errors import AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError
+
 from tgdl.config import DOWNLOAD_DIR, CONCURRENT_DOWNLOADS
 from tgdl.database import get_cached_messages, update_download_status, record_download_history
 from tgdl.models import DownloadJob, MessageMetadata
@@ -71,7 +74,6 @@ class Downloader:
                 )
                 self.active_jobs[msg_id] = job
                 
-                # Retry loop (Maximum retries: 5)
                 success = False
                 while job.retries <= job.max_retries and not success:
                     try:
@@ -80,6 +82,43 @@ class Downloader:
                     except asyncio.CancelledError:
                         await update_download_status(msg_id, "pending", job.downloaded_bytes)
                         raise
+                    except FloodWaitError as e:
+                        job.status = f"flood wait ({e.seconds}s)"
+                        await update_download_status(msg_id, "pending", job.downloaded_bytes)
+                        await asyncio.sleep(e.seconds + 1)
+                    except PermissionError:
+                        job.status = "failed"
+                        job.error_msg = "Permission Denied: Cannot write to download folder."
+                        await update_download_status(msg_id, "failed", job.downloaded_bytes)
+                        for cb in self.on_failed:
+                            cb(msg_id, job.error_msg)
+                        break
+                    except OSError as e:
+                        if getattr(e, "errno", 0) == 28 or "No space left" in str(e):
+                            job.status = "failed"
+                            job.error_msg = "Disk Full: No space left on target disk."
+                            await update_download_status(msg_id, "failed", job.downloaded_bytes)
+                            for cb in self.on_failed:
+                                cb(msg_id, job.error_msg)
+                            break
+                        else:
+                            job.retries += 1
+                            if job.retries <= job.max_retries:
+                                job.status = f"retry {job.retries}/{job.max_retries}"
+                                await asyncio.sleep(2 * job.retries)
+                            else:
+                                job.status = "failed"
+                                job.error_msg = str(e)
+                                await update_download_status(msg_id, "failed", job.downloaded_bytes)
+                                for cb in self.on_failed:
+                                    cb(msg_id, str(e))
+                    except (AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError):
+                        job.status = "failed"
+                        job.error_msg = "Session Expired: Please re-authorize your session."
+                        await update_download_status(msg_id, "failed", job.downloaded_bytes)
+                        for cb in self.on_failed:
+                            cb(msg_id, job.error_msg)
+                        break
                     except Exception as e:
                         job.retries += 1
                         if job.retries <= job.max_retries:
@@ -112,7 +151,6 @@ class Downloader:
         local_path = os.path.join(DOWNLOAD_DIR, job.filename)
         local_size = 0
 
-        # Skip existing complete files or align offset to 4KB boundary
         if os.path.exists(local_path):
             local_size = os.path.getsize(local_path)
             if local_size >= job.file_size:
@@ -132,7 +170,6 @@ class Downloader:
                     except OSError:
                         pass
             else:
-                # Align offset to lower 4096-byte boundary to satisfy Telegram chunk requirements
                 local_size = (local_size // 4096) * 4096
                 with open(local_path, "r+b") as f:
                     f.truncate(local_size)
@@ -172,7 +209,6 @@ class Downloader:
                         await update_download_status(job.message_id, "downloading", job.downloaded_bytes)
                         for cb in self.on_progress:
                             cb(job)
-                # Flush file buffer to guarantee disk integrity
                 await f.flush()
         except asyncio.CancelledError:
             await update_download_status(job.message_id, "pending", job.downloaded_bytes)

@@ -10,6 +10,7 @@ from tgdl.downloader import Downloader
 from tgdl.widgets import DownloadProgressRow, StatCard, CounterBar
 from tgdl.models import DownloadJob
 from tgdl.utils.helpers import format_bytes, format_speed, get_file_type
+from tgdl.screens.error_modal import ErrorModal
 import tgdl.database as db
 
 class MainScreen(Screen):
@@ -79,6 +80,12 @@ class MainScreen(Screen):
         table.add_column("Ext", key="ext")
         table.add_column("Size", key="size")
         table.add_column("Date", key="date")
+        
+        # Attach error modal listener for download failures
+        def handle_download_error(msg_id: int, reason: str) -> None:
+            self.app.push_screen(ErrorModal("Download Error", f"Message #{msg_id} failed: {reason}"))
+            
+        self.downloader.on_failed.append(handle_download_error)
         await self.reload_table()
         self.downloader.start()
         self.set_interval(0.5, self.update_stats_and_jobs)
@@ -204,6 +211,8 @@ class MainScreen(Screen):
         try:
             await self.browser.sync_messages()
             await self.reload_table()
+        except Exception as e:
+            self.app.push_screen(ErrorModal("Sync Failure", str(e)))
         finally:
             spinner.display = False
 
