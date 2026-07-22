@@ -7,13 +7,14 @@ from telethon.errors import (
     SessionPasswordNeededError, ApiIdInvalidError, AuthKeyUnregisteredError,
     SessionRevokedError, UserDeactivatedError, AuthKeyInvalidError, RPCError
 )
+from telethon.network.connection import ConnectionTcpObfuscated
 from telethon.tl.types import MessageMediaWebPage, DocumentAttributeVideo, DocumentAttributeAudio
 
 import tgdl.config as config
 from tgdl.models import MessageMetadata
 
 class TelegramClientWrapper:
-    """Wrapper managing Telethon client connection, session reuse, network resiliency, and error handling."""
+    """Wrapper managing Telethon client connection, session reuse, proxy support, and network resiliency."""
 
     def __init__(self, session_path: Optional[str] = None) -> None:
         self.session_path = session_path or config.SESSION_PATH
@@ -28,15 +29,18 @@ class TelegramClientWrapper:
         if not config.API_ID or not config.API_HASH:
             raise ValueError("API_ID or API_HASH missing in configuration.")
 
+        proxy = config.get_proxy()
         try:
             if not self.client:
                 self.client = TelegramClient(
                     session_path,
                     config.API_ID,
                     config.API_HASH,
-                    connection_retries=5,
-                    retry_delay=2,
-                    timeout=10
+                    connection=ConnectionTcpObfuscated,
+                    proxy=proxy,
+                    connection_retries=3,
+                    retry_delay=1,
+                    timeout=5
                 )
             if not self.client.is_connected():
                 await self.client.connect()
@@ -44,7 +48,11 @@ class TelegramClientWrapper:
         except (AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError, AuthKeyInvalidError) as e:
             raise RuntimeError(f"Session Expired: {e}") from e
         except (asyncio.TimeoutError, socket.error, ConnectionError, OSError) as e:
-            raise ConnectionError(f"Network Connection Failed: {e}") from e
+            raise ConnectionError(
+                f"Network Connection Failed: Cannot reach Telegram servers.\n"
+                f"Your network/ISP or firewall may be blocking direct Telegram IP connections.\n"
+                f"If you are behind a firewall or restricted network, please enable a VPN or add SOCKS5/HTTP Proxy settings in .env (e.g. TELEGRAM_PROXY_HOST=127.0.0.1)."
+            ) from e
         except ApiIdInvalidError as e:
             raise ValueError("Invalid Telegram API_ID or API_HASH credentials.") from e
 

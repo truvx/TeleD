@@ -1,18 +1,16 @@
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple, Dict, Any
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 TGDL_DIR = BASE_DIR / "tgdl"
 
 def load_env(env_path: Path) -> None:
-    if not env_path.exists():
-        return
+    if not env_path.exists(): return
     with open(env_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if not line or line.startswith("#"):
-                continue
+            if not line or line.startswith("#"): continue
             if "=" in line:
                 key, val = line.split("=", 1)
                 os.environ[key.strip()] = val.strip()
@@ -28,8 +26,26 @@ DATABASE_PATH: str = os.environ.get("DATABASE_PATH", str(TGDL_DIR / "cache" / "t
 DOWNLOAD_DIR: str = os.environ.get("DOWNLOAD_DIR", str(TGDL_DIR / "downloads"))
 CONCURRENT_DOWNLOADS: int = int(os.environ.get("CONCURRENT_DOWNLOADS", "2"))
 
+PROXY_HOST: Optional[str] = os.environ.get("TELEGRAM_PROXY_HOST")
+PROXY_PORT: Optional[int] = int(os.environ.get("TELEGRAM_PROXY_PORT", "0")) if os.environ.get("TELEGRAM_PROXY_PORT", "").isdigit() else None
+PROXY_TYPE: str = os.environ.get("TELEGRAM_PROXY_TYPE", "socks5").lower()
+PROXY_USER: Optional[str] = os.environ.get("TELEGRAM_PROXY_USER")
+PROXY_PASS: Optional[str] = os.environ.get("TELEGRAM_PROXY_PASS")
+
+def get_proxy() -> Optional[Any]:
+    host = PROXY_HOST or os.environ.get("HTTP_PROXY") or os.environ.get("ALL_PROXY")
+    if not host: return None
+    port = PROXY_PORT or 1080
+    try:
+        import socks
+        ptype = socks.HTTP if PROXY_TYPE == "http" else socks.SOCKS5
+        return (ptype, host.replace("http://", "").replace("https://", "").split(":")[0], port, True, PROXY_USER, PROXY_PASS)
+    except Exception:
+        return None
+
 def reload_config() -> None:
     global API_ID, API_HASH, SESSION_PATH, DATABASE_PATH, DOWNLOAD_DIR, CONCURRENT_DOWNLOADS
+    global PROXY_HOST, PROXY_PORT, PROXY_TYPE, PROXY_USER, PROXY_PASS
     load_env(BASE_DIR / ".env")
     raw = os.environ.get("TELEGRAM_API_ID")
     API_ID = int(raw) if raw and raw.isdigit() else None
@@ -38,6 +54,11 @@ def reload_config() -> None:
     DATABASE_PATH = os.environ.get("DATABASE_PATH", str(TGDL_DIR / "cache" / "tgdl.db"))
     DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", str(TGDL_DIR / "downloads"))
     CONCURRENT_DOWNLOADS = int(os.environ.get("CONCURRENT_DOWNLOADS", "2"))
+    PROXY_HOST = os.environ.get("TELEGRAM_PROXY_HOST")
+    PROXY_PORT = int(os.environ.get("TELEGRAM_PROXY_PORT", "0")) if os.environ.get("TELEGRAM_PROXY_PORT", "").isdigit() else None
+    PROXY_TYPE = os.environ.get("TELEGRAM_PROXY_TYPE", "socks5").lower()
+    PROXY_USER = os.environ.get("TELEGRAM_PROXY_USER")
+    PROXY_PASS = os.environ.get("TELEGRAM_PROXY_PASS")
 
 def is_config_valid() -> bool:
     return API_ID is not None and API_HASH is not None
