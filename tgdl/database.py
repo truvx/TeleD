@@ -2,7 +2,7 @@ import sqlite3
 import os
 import asyncio
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 from tgdl.config import DATABASE_PATH
 from tgdl.models import MessageMetadata
 
@@ -41,7 +41,6 @@ def _init_db_sync() -> None:
         conn.commit()
 
 async def init_db() -> None:
-    """Initialize the SQLite database schema."""
     await asyncio.to_thread(_init_db_sync)
 
 def _cache_messages_sync(messages: List[MessageMetadata]) -> None:
@@ -76,20 +75,36 @@ def _get_cached_messages_sync(
     sort_by: str = "message_id",
     sort_desc: bool = True
 ) -> List[MessageMetadata]:
-    valid_cols = {"message_id", "filename", "extension", "file_size", "upload_date", "download_status"}
-    if sort_by not in valid_cols:
-        sort_by = "message_id"
-    
+    valid_cols = {
+        "message_id": "message_id",
+        "id": "message_id",
+        "name": "filename",
+        "filename": "filename",
+        "size": "file_size",
+        "file_size": "file_size",
+        "date": "upload_date",
+        "upload_date": "upload_date",
+        "ext": "extension",
+        "extension": "extension"
+    }
+    col_name = valid_cols.get(sort_by.lower(), "message_id")
     direction = "DESC" if sort_desc else "ASC"
+    
     query = "SELECT message_id, filename, extension, file_size, mime_type, upload_date, download_status, downloaded_bytes, path FROM messages"
     params = []
     
     if search_query:
-        query += " WHERE filename LIKE ? OR mime_type LIKE ? OR extension LIKE ?"
-        term = f"%{search_query}%"
-        params = [term, term, term]
+        q = search_query.strip()
+        # Handle wildcard queries (*.mkv -> %.mkv, test? -> test_)
+        if "*" in q or "?" in q:
+            pattern = q.replace("*", "%").replace("?", "_")
+        else:
+            pattern = f"%{q}%"
+            
+        query += " WHERE filename LIKE ? OR extension LIKE ? OR upload_date LIKE ? OR mime_type LIKE ?"
+        params = [pattern, pattern, pattern, pattern]
         
-    query += f" ORDER BY {sort_by} {direction}"
+    query += f" ORDER BY {col_name} {direction}"
     
     with sqlite3.connect(DATABASE_PATH) as conn:
         conn.row_factory = sqlite3.Row

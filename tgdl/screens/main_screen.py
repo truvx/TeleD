@@ -20,79 +20,25 @@ class MainScreen(Screen):
         ("space", "toggle_selection", "Select"),
         ("enter", "download_selected", "Download"),
         ("escape", "clear_search", "Clear Search"),
+        ("o", "cycle_sorting", "Sort"),
         ("r", "sync_telegram", "Refresh"),
         ("t", "toggle_theme", "Theme"),
         ("q", "quit", "Quit"),
     ]
 
     DEFAULT_CSS = """
-    MainScreen {
-        background: $background;
-        layout: vertical;
-    }
-    
-    #main-container {
-        layout: horizontal;
-        height: 1fr;
-    }
-    
-    #left-pane {
-        width: 62%;
-        height: 100%;
-        border: round $primary;
-        padding: 0 1;
-        layout: vertical;
-    }
-    
-    #left-pane:focus-within {
-        border: round $accent;
-    }
-
-    #right-pane {
-        width: 38%;
-        height: 100%;
-        border: round $primary;
-        padding: 0 1;
-        layout: vertical;
-    }
-
-    #right-pane:focus-within {
-        border: round $accent;
-    }
-    
-    #search-bar {
-        margin: 0 0 1 0;
-        height: 3;
-        border: round $primary-muted;
-    }
-    
-    #search-bar:focus {
-        border: round $accent;
-    }
-    
-    #sync-spinner {
-        height: 1;
-        margin-bottom: 1;
-        display: none;
-    }
-
-    #files-table {
-        height: 1fr;
-    }
-
-    #stats-row {
-        layout: horizontal;
-        height: 4;
-        margin-bottom: 1;
-    }
-    
-    #downloads-list {
-        background: $surface;
-        border: round $primary-muted;
-        height: 1fr;
-        overflow-y: scroll;
-        padding: 1;
-    }
+    MainScreen { background: $background; layout: vertical; }
+    #main-container { layout: horizontal; height: 1fr; }
+    #left-pane { width: 62%; height: 100%; border: round $primary; padding: 0 1; layout: vertical; }
+    #left-pane:focus-within { border: round $accent; }
+    #right-pane { width: 38%; height: 100%; border: round $primary; padding: 0 1; layout: vertical; }
+    #right-pane:focus-within { border: round $accent; }
+    #search-bar { margin: 0 0 1 0; height: 3; border: round $primary-muted; }
+    #search-bar:focus { border: round $accent; }
+    #sync-spinner { height: 1; margin-bottom: 1; display: none; }
+    #files-table { height: 1fr; }
+    #stats-row { layout: horizontal; height: 4; margin-bottom: 1; }
+    #downloads-list { background: $surface; border: round $primary-muted; height: 1fr; overflow-y: scroll; padding: 1; }
     """
 
     def __init__(self, browser: Browser, downloader: Downloader, **kwargs) -> None:
@@ -103,12 +49,13 @@ class MainScreen(Screen):
         self.progress_widgets: Dict[int, DownloadProgressRow] = {}
         self.sort_by = "message_id"
         self.sort_desc = True
+        self.sort_fields = ["filename", "file_size", "upload_date", "extension", "message_id"]
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="main-container"):
             with Vertical(id="left-pane"):
-                yield Input(placeholder="🔍 Type to search... (Press ESC to clear)", id="search-bar")
+                yield Input(placeholder="🔍 Type to search... (Supports *.mkv, *.pdf, *.zip, *.iso)", id="search-bar")
                 yield LoadingIndicator(id="sync-spinner")
                 yield DataTable(id="files-table")
             with Vertical(id="right-pane"):
@@ -123,15 +70,12 @@ class MainScreen(Screen):
     async def on_mount(self) -> None:
         table = self.query_one("#files-table", DataTable)
         table.cursor_type = "row"
-        
-        # Setup columns for Telegram browser
         table.add_column("✔", key="select")
         table.add_column("ID", key="id")
         table.add_column("Filename", key="filename")
         table.add_column("Ext", key="ext")
         table.add_column("Size", key="size")
         table.add_column("Date", key="date")
-
         await self.reload_table()
         self.downloader.start()
         self.set_interval(0.5, self.update_stats_and_jobs)
@@ -153,6 +97,22 @@ class MainScreen(Screen):
         current = getattr(self.app, "theme", "textual-dark")
         self.app.theme = "textual-light" if current == "textual-dark" else "textual-dark"
 
+    async def action_cycle_sorting(self) -> None:
+        idx = (self.sort_fields.index(self.sort_by) + 1) % len(self.sort_fields)
+        self.sort_by = self.sort_fields[idx]
+        await self.reload_table()
+
+    async def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
+        col_key = str(event.column_key.value)
+        key_map = {"filename": "filename", "ext": "extension", "size": "file_size", "date": "upload_date", "id": "message_id"}
+        target = key_map.get(col_key, "message_id")
+        if self.sort_by == target:
+            self.sort_desc = not self.sort_desc
+        else:
+            self.sort_by = target
+            self.sort_desc = True
+        await self.reload_table()
+
     async def reload_table(self) -> None:
         try:
             search_bar = self.query_one("#search-bar", Input)
@@ -160,27 +120,14 @@ class MainScreen(Screen):
         except Exception:
             query = None
 
-        messages = await self.browser.load_messages(
-            search_query=query,
-            sort_by=self.sort_by,
-            sort_desc=self.sort_desc
-        )
-
+        messages = await self.browser.load_messages(search_query=query, sort_by=self.sort_by, sort_desc=self.sort_desc)
         table = self.query_one("#files-table", DataTable)
         table.clear()
         
         for msg in messages:
             sel_text = "✔" if msg.message_id in self.selected_ids else " "
             ext_label = msg.extension.lstrip(".").upper() if msg.extension else get_file_type(msg.filename, msg.mime_type)
-            table.add_row(
-                sel_text,
-                str(msg.message_id),
-                msg.filename,
-                ext_label,
-                format_bytes(msg.file_size),
-                msg.upload_date[:10] if msg.upload_date else "",
-                key=str(msg.message_id)
-            )
+            table.add_row(sel_text, str(msg.message_id), msg.filename, ext_label, format_bytes(msg.file_size), msg.upload_date[:10] if msg.upload_date else "", key=str(msg.message_id))
             
         await self._update_counters()
 
@@ -192,39 +139,30 @@ class MainScreen(Screen):
         table = self.query_one("#files-table", DataTable)
         if table.row_count == 0 or table.cursor_coordinate is None:
             return
-        
-        row_idx = table.cursor_coordinate.row
-        row_key = table.get_row_key_at_index(row_idx)
+        row_key = table.get_row_key_at_index(table.cursor_coordinate.row)
         msg_id = int(row_key.value)
-        
         if msg_id in self.selected_ids:
             self.selected_ids.remove(msg_id)
             table.update_cell(row_key, "select", " ")
         else:
             self.selected_ids.add(msg_id)
             table.update_cell(row_key, "select", "✔")
-            
         asyncio.create_task(self._update_counters())
 
     async def action_download_selected(self) -> None:
         table = self.query_one("#files-table", DataTable)
         target_ids = set(self.selected_ids)
-        
         if not target_ids and table.row_count > 0 and table.cursor_coordinate is not None:
             row_key = table.get_row_key_at_index(table.cursor_coordinate.row)
             target_ids.add(int(row_key.value))
-            
         if not target_ids:
             return
-            
         for msg_id in target_ids:
             await self.downloader.add_to_queue(msg_id)
-            
         self.selected_ids.clear()
         await self.reload_table()
 
     async def action_sync_telegram(self) -> None:
-        """Asynchronously sync new Telegram messages while showing a loading spinner."""
         spinner = self.query_one("#sync-spinner", LoadingIndicator)
         spinner.display = True
         try:
@@ -237,21 +175,15 @@ class MainScreen(Screen):
         all_msgs = await db.get_cached_messages()
         downloaded_count = sum(1 for m in all_msgs if m.download_status == "completed")
         queue_count = self.downloader.queue.qsize() + len(self.downloader.queued_ids)
-        
         try:
             cbar = self.query_one("#counter-bar", CounterBar)
-            cbar.update_counts(
-                selected=len(self.selected_ids),
-                downloaded=downloaded_count,
-                queue=queue_count
-            )
+            cbar.update_counts(selected=len(self.selected_ids), downloaded=downloaded_count, queue=queue_count)
         except Exception:
             pass
 
     async def update_stats_and_jobs(self) -> None:
         active_jobs = self.downloader.active_jobs
         downloads_list = self.query_one("#downloads-list", VerticalScroll)
-        
         for msg_id, job in list(active_jobs.items()):
             if msg_id not in self.progress_widgets:
                 widget = DownloadProgressRow(job)
@@ -265,16 +197,8 @@ class MainScreen(Screen):
                 msg_row = await db.get_message(msg_id)
                 if widget.job.status == "downloading":
                     if msg_row:
-                        job_copy = DownloadJob(
-                            message_id=msg_id,
-                            filename=widget.job.filename,
-                            file_size=widget.job.file_size,
-                            downloaded_bytes=msg_row.file_size,
-                            status=msg_row.download_status,
-                            progress=100.0 if msg_row.download_status == "completed" else 0.0
-                        )
+                        job_copy = DownloadJob(message_id=msg_id, filename=widget.job.filename, file_size=widget.job.file_size, downloaded_bytes=msg_row.file_size, status=msg_row.download_status, progress=100.0 if msg_row.download_status == "completed" else 0.0)
                         widget.update_job(job_copy)
-
                     async def remove_widget(mid: int, w: DownloadProgressRow) -> None:
                         await asyncio.sleep(3)
                         try:
@@ -290,5 +214,4 @@ class MainScreen(Screen):
             self.query_one("#stat-active", StatCard).update_value(str(len(active_jobs)))
         except Exception:
             pass
-            
         await self._update_counters()
