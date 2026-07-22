@@ -1,5 +1,5 @@
 import asyncio
-from typing import Dict, Set
+from typing import Dict, Set, Optional
 from textual.app import ComposeResult
 from textual.screen import Screen
 from textual.widgets import Header, Footer, DataTable, Input, Label, LoadingIndicator
@@ -18,6 +18,7 @@ class MainScreen(Screen):
 
     BINDINGS = [
         ("f", "focus_search", "Search"),
+        ("c", "cycle_category", "Category Filter"),
         ("space", "toggle_selection", "Select"),
         ("ctrl+a", "select_all", "Select All"),
         ("ctrl+d", "clear_selection", "Clear Select"),
@@ -53,7 +54,9 @@ class MainScreen(Screen):
         self.progress_widgets: Dict[int, DownloadProgressRow] = {}
         self.sort_by = "message_id"
         self.sort_desc = True
-        self.sort_fields = ["filename", "file_size", "upload_date", "extension", "message_id"]
+        self.sort_fields = ["filename", "size", "date", "extension", "downloaded", "message_id"]
+        self.categories = [None, "videos", "images", "pdf", "documents", "archives", "audio"]
+        self.current_category_idx = 0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -64,7 +67,7 @@ class MainScreen(Screen):
                 yield DataTable(id="files-table")
             with Vertical(id="right-pane"):
                 with Horizontal(id="stats-row"):
-                    yield StatCard("Active Speed", "0 B/s", id="stat-speed")
+                    yield StatCard("Filtered Size", "0 B", id="stat-speed")
                     yield StatCard("Active Jobs", "0", id="stat-active")
                 with VerticalScroll(id="downloads-list"):
                     pass
@@ -121,6 +124,10 @@ class MainScreen(Screen):
         self.app.theme = next_theme
         await db.set_setting("theme", next_theme)
 
+    async def action_cycle_category(self) -> None:
+        self.current_category_idx = (self.current_category_idx + 1) % len(self.categories)
+        await self.reload_table()
+
     async def action_cycle_sorting(self) -> None:
         idx = (self.sort_fields.index(self.sort_by) + 1) % len(self.sort_fields)
         self.sort_by = self.sort_fields[idx]
@@ -130,7 +137,7 @@ class MainScreen(Screen):
 
     async def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
         col_key = str(event.column_key.value)
-        key_map = {"filename": "filename", "type": "extension", "size": "file_size", "date": "upload_date"}
+        key_map = {"filename": "filename", "type": "extension", "size": "size", "date": "date", "downloaded": "downloaded", "status": "downloaded"}
         target = key_map.get(col_key, "message_id")
         self.sort_desc = not self.sort_desc if self.sort_by == target else True
         self.sort_by = target
@@ -146,14 +153,18 @@ class MainScreen(Screen):
             search_bar = None
             query = None
 
-        messages = await self.browser.load_messages(search_query=query, sort_by=self.sort_by, sort_desc=self.sort_desc)
+        cat = self.categories[self.current_category_idx]
+        messages = await self.browser.load_messages(search_query=query, sort_by=self.sort_by, sort_desc=self.sort_desc, category_filter=cat)
+        cnt, total_bytes = await db.get_filtered_totals(search_query=query, category_filter=cat)
+
         table = self.query_one("#files-table", DataTable)
         table.clear()
 
+        cat_label = f"[{cat.upper()}] " if cat else ""
         if search_bar and query:
-            search_bar.placeholder = f"🔍 Search ({len(messages)} items)..."
+            search_bar.placeholder = f"🔍 {cat_label}Search ({cnt} items, {format_bytes(total_bytes)})..."
         elif search_bar:
-            search_bar.placeholder = "🔍 Type to search... (ESC clear, TAB focus)"
+            search_bar.placeholder = f"🔍 {cat_label}Type to search... (ESC clear, C filter, TAB focus)"
 
         for msg in messages:
             sel_text = "✔" if msg.message_id in self.selected_ids else " "
@@ -164,6 +175,11 @@ class MainScreen(Screen):
             status_markup = st_map.get(msg.download_status, f"[bold cyan]{msg.download_status.title()}[/]")
 
             table.add_row(sel_text, fn_disp, format_bytes(msg.file_size), badge, msg.upload_date[:10] if msg.upload_date else "", is_dl, status_markup, key=str(msg.message_id))
+
+        try:
+            self.query_one("#stat-speed", StatCard).update_value(format_bytes(total_bytes))
+        except Exception:
+            pass
 
         await self._update_counters()
 
@@ -269,9 +285,7 @@ class MainScreen(Screen):
                         pass
                 asyncio.create_task(remove_widget(msg_id, widget))
 
-        total_speed = sum(job.speed for job in active_jobs.values())
         try:
-            self.query_one("#stat-speed", StatCard).update_value(format_speed(total_speed))
             self.query_one("#stat-active", StatCard).update_value(str(len(active_jobs)))
         except Exception:
             pass

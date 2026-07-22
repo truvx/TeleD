@@ -20,6 +20,7 @@ class Browser:
         search_query: Optional[str] = None,
         sort_by: str = "message_id",
         sort_desc: bool = True,
+        category_filter: Optional[str] = None,
         limit: int = 300,
         offset: int = 0
     ) -> List[MessageMetadata]:
@@ -28,6 +29,7 @@ class Browser:
             search_query=search_query,
             sort_by=sort_by,
             sort_desc=sort_desc,
+            category_filter=category_filter,
             limit=limit,
             offset=offset
         )
