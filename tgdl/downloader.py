@@ -191,7 +191,6 @@ class Downloader:
         local_path = os.path.join(DOWNLOAD_DIR, job.filename)
         local_size = 0
 
-        # Skip existing complete files or align 4KB chunk boundary
         if os.path.exists(local_path):
             local_size = os.path.getsize(local_path)
             if local_size >= job.file_size:
@@ -237,13 +236,16 @@ class Downloader:
                     
                     now = time.time()
                     elapsed = now - last_time
-                    if elapsed >= 0.5:
+                    if elapsed >= 0.1:  # Update progress 10 times per second
                         bytes_diff = job.downloaded_bytes - last_bytes
                         current_speed = bytes_diff / elapsed
-                        job.speed = current_speed if job.speed == 0.0 else (0.7 * job.speed + 0.3 * current_speed)
+                        job.speed = current_speed
+                        job.avg_speed = current_speed if job.avg_speed == 0.0 else (0.8 * job.avg_speed + 0.2 * current_speed)
+                        
                         remaining = job.file_size - job.downloaded_bytes
-                        job.eta = remaining / job.speed if job.speed > 0 else float("inf")
+                        job.eta = remaining / job.avg_speed if job.avg_speed > 0 else float("inf")
                         job.progress = (job.downloaded_bytes / job.file_size) * 100.0 if job.file_size > 0 else 0.0
+                        
                         last_time = now
                         last_bytes = job.downloaded_bytes
                         await update_download_status(job.message_id, "downloading", job.downloaded_bytes)
@@ -254,7 +256,6 @@ class Downloader:
             await update_download_status(job.message_id, "pending", job.downloaded_bytes)
             raise
 
-        # Automatic file size verification
         actual_size = os.path.getsize(local_path)
         if actual_size != job.file_size:
             raise ValueError(f"File size mismatch: downloaded {actual_size} bytes, expected {job.file_size} bytes.")

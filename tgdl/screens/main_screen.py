@@ -95,7 +95,7 @@ class MainScreen(Screen):
         self.downloader.on_failed.append(lambda mid, r: self.app.push_screen(ErrorModal("Download Error", f"Message #{mid} failed: {r}")))
         await self.reload_table()
         self.downloader.start()
-        self.set_interval(0.5, self.update_stats_and_jobs)
+        self.set_interval(0.1, self.update_stats_and_jobs)
 
     def on_resize(self) -> None:
         self.refresh()
@@ -261,8 +261,10 @@ class MainScreen(Screen):
         dl_cnt = sum(1 for m in all_msgs if m.download_status == "completed")
         q_cnt = self.downloader.queue.qsize() + len(self.downloader.queued_ids)
         sel_bytes = sum((await db.get_message(mid)).file_size for mid in list(self.selected_ids) if await db.get_message(mid))
+        q_dl = sum(j.downloaded_bytes for j in self.downloader.active_jobs.values())
+        q_tot = sum(j.file_size for j in self.downloader.active_jobs.values())
         try:
-            self.query_one("#counter-bar", CounterBar).update_counts(selected=len(self.selected_ids), selected_bytes=sel_bytes, downloaded=dl_cnt, queue=q_cnt)
+            self.query_one("#counter-bar", CounterBar).update_counts(selected=len(self.selected_ids), selected_bytes=sel_bytes, downloaded=dl_cnt, queue=q_cnt, queue_downloaded=q_dl, queue_total=q_tot)
         except Exception:
             pass
 
