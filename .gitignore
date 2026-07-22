@@ -1,0 +1,22 @@
+# Credentials and Sessions
+.env
+*.session
+*.session-journal
+tgdl/session*
+
+# Database cache and downloaded files
+tgdl/cache/
+tgdl/downloads/
+
+# Python byte-code & virtual environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+ENV/
+
+# OS metadata
+.DS_Store
+Thumbs.db
