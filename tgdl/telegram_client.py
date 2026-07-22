@@ -29,8 +29,17 @@ class TelegramClientWrapper:
             raise ValueError("API_ID or API_HASH missing in configuration.")
 
         try:
-            self.client = TelegramClient(session_path, config.API_ID, config.API_HASH)
-            await asyncio.wait_for(self.client.connect(), timeout=15.0)
+            if not self.client:
+                self.client = TelegramClient(
+                    session_path,
+                    config.API_ID,
+                    config.API_HASH,
+                    connection_retries=5,
+                    retry_delay=2,
+                    timeout=10
+                )
+            if not self.client.is_connected():
+                await self.client.connect()
             return await self.client.is_user_authorized()
         except (AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError, AuthKeyInvalidError) as e:
             raise RuntimeError(f"Session Expired: {e}") from e
