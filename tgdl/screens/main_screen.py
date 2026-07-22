@@ -9,7 +9,7 @@ from tgdl.browser import Browser
 from tgdl.downloader import Downloader
 from tgdl.widgets import DownloadProgressRow, StatCard, CounterBar
 from tgdl.models import DownloadJob
-from tgdl.utils.helpers import format_bytes, format_speed, get_file_type
+from tgdl.utils.helpers import format_bytes, format_speed, get_colored_file_badge
 from tgdl.screens.error_modal import ErrorModal
 import tgdl.database as db
 
@@ -81,7 +81,16 @@ class MainScreen(Screen):
         table.add_column("Size", key="size")
         table.add_column("Date", key="date")
         
-        # Attach error modal listener for download failures
+        # Restore saved state settings
+        self.sort_by = await db.get_setting("sort_by", "message_id")
+        self.sort_desc = (await db.get_setting("sort_desc", "true")) == "true"
+        saved_search = await db.get_setting("search_query", "")
+        if saved_search:
+            self.query_one("#search-bar", Input).value = saved_search
+
+        saved_theme = await db.get_setting("theme", "textual-dark")
+        self.app.theme = saved_theme
+
         def handle_download_error(msg_id: int, reason: str) -> None:
             self.app.push_screen(ErrorModal("Download Error", f"Message #{msg_id} failed: {reason}"))
             
@@ -89,6 +98,10 @@ class MainScreen(Screen):
         await self.reload_table()
         self.downloader.start()
         self.set_interval(0.5, self.update_stats_and_jobs)
+
+    def on_resize(self) -> None:
+        """Handle terminal window resizing smoothly."""
+        self.refresh()
 
     async def action_quit(self) -> None:
         await self.downloader.stop()
@@ -100,16 +113,21 @@ class MainScreen(Screen):
     async def action_clear_search(self) -> None:
         search_bar = self.query_one("#search-bar", Input)
         search_bar.value = ""
+        await db.set_setting("search_query", "")
         self.query_one("#files-table", DataTable).focus()
         await self.reload_table()
 
     async def action_toggle_theme(self) -> None:
         current = getattr(self.app, "theme", "textual-dark")
-        self.app.theme = "textual-light" if current == "textual-dark" else "textual-dark"
+        next_theme = "textual-light" if current == "textual-dark" else "textual-dark"
+        self.app.theme = next_theme
+        await db.set_setting("theme", next_theme)
 
     async def action_cycle_sorting(self) -> None:
         idx = (self.sort_fields.index(self.sort_by) + 1) % len(self.sort_fields)
         self.sort_by = self.sort_fields[idx]
+        await db.set_setting("sort_by", self.sort_by)
+        await db.set_setting("sort_desc", str(self.sort_desc).lower())
         await self.reload_table()
 
     async def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
@@ -121,6 +139,8 @@ class MainScreen(Screen):
         else:
             self.sort_by = target
             self.sort_desc = True
+        await db.set_setting("sort_by", self.sort_by)
+        await db.set_setting("sort_desc", str(self.sort_desc).lower())
         await self.reload_table()
 
     async def reload_table(self) -> None:
@@ -136,13 +156,14 @@ class MainScreen(Screen):
         
         for msg in messages:
             sel_text = "✔" if msg.message_id in self.selected_ids else " "
-            ext_label = msg.extension.lstrip(".").upper() if msg.extension else get_file_type(msg.filename, msg.mime_type)
-            table.add_row(sel_text, str(msg.message_id), msg.filename, ext_label, format_bytes(msg.file_size), msg.upload_date[:10] if msg.upload_date else "", key=str(msg.message_id))
+            badge = get_colored_file_badge(msg.filename, msg.mime_type, msg.extension)
+            table.add_row(sel_text, str(msg.message_id), msg.filename, badge, format_bytes(msg.file_size), msg.upload_date[:10] if msg.upload_date else "", key=str(msg.message_id))
             
         await self._update_counters()
 
     async def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "search-bar":
+            await db.set_setting("search_query", event.input.value)
             await self.reload_table()
 
     def action_toggle_selection(self) -> None:

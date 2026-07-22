@@ -11,7 +11,6 @@ def _init_db_sync() -> None:
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
     with sqlite3.connect(DATABASE_PATH) as conn:
-        # Enable WAL mode for high concurrency non-blocking reads/writes
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         
@@ -38,22 +37,38 @@ def _init_db_sync() -> None:
                 path TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
         
-        # Multi-column indexes for instant searching/sorting over 50,000+ rows
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_filename ON messages(filename);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_extension ON messages(extension);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_upload_date ON messages(upload_date);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_file_size ON messages(file_size);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_download_status ON messages(download_status);")
-        
-        cursor = conn.execute("PRAGMA table_info(messages)")
-        cols = [row[1] for row in cursor.fetchall()]
-        if "extension" not in cols:
-            conn.execute("ALTER TABLE messages ADD COLUMN extension TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
 async def init_db() -> None:
     await asyncio.to_thread(_init_db_sync)
+
+def _set_setting_sync(key: str, value: str) -> None:
+    with sqlite3.connect(DATABASE_PATH) as conn:
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
+        conn.commit()
+
+async def set_setting(key: str, value: str) -> None:
+    await asyncio.to_thread(_set_setting_sync, key, value)
+
+def _get_setting_sync(key: str, default: str = "") -> str:
+    with sqlite3.connect(DATABASE_PATH) as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else default
+
+async def get_setting(key: str, default: str = "") -> str:
+    return await asyncio.to_thread(_get_setting_sync, key, default)
 
 def _cache_messages_sync(messages: List[MessageMetadata]) -> None:
     with sqlite3.connect(DATABASE_PATH) as conn:
@@ -90,16 +105,11 @@ def _get_cached_messages_sync(
     offset: int = 0
 ) -> List[MessageMetadata]:
     valid_cols = {
-        "message_id": "message_id",
-        "id": "message_id",
-        "name": "filename",
-        "filename": "filename",
-        "size": "file_size",
-        "file_size": "file_size",
-        "date": "upload_date",
-        "upload_date": "upload_date",
-        "ext": "extension",
-        "extension": "extension"
+        "message_id": "message_id", "id": "message_id",
+        "name": "filename", "filename": "filename",
+        "size": "file_size", "file_size": "file_size",
+        "date": "upload_date", "upload_date": "upload_date",
+        "ext": "extension", "extension": "extension"
     }
     col_name = valid_cols.get(sort_by.lower(), "message_id")
     direction = "DESC" if sort_desc else "ASC"
@@ -109,11 +119,7 @@ def _get_cached_messages_sync(
     
     if search_query:
         q = search_query.strip()
-        if "*" in q or "?" in q:
-            pattern = q.replace("*", "%").replace("?", "_")
-        else:
-            pattern = f"%{q}%"
-            
+        pattern = q.replace("*", "%").replace("?", "_") if ("*" in q or "?" in q) else f"%{q}%"
         query += " WHERE filename LIKE ? OR extension LIKE ? OR upload_date LIKE ? OR mime_type LIKE ?"
         params = [pattern, pattern, pattern, pattern]
         
@@ -122,8 +128,7 @@ def _get_cached_messages_sync(
     
     with sqlite3.connect(DATABASE_PATH) as conn:
         conn.row_factory = sqlite3.Row
-        cursor = conn.execute(query, params)
-        rows = cursor.fetchall()
+        rows = conn.execute(query, params).fetchall()
         
     return [
         MessageMetadata(
@@ -149,31 +154,15 @@ async def get_cached_messages(
 ) -> List[MessageMetadata]:
     return await asyncio.to_thread(_get_cached_messages_sync, search_query, sort_by, sort_desc, limit, offset)
 
-def _update_download_status_sync(
-    message_id: int,
-    status: str,
-    downloaded_bytes: int,
-    path: Optional[str] = None
-) -> None:
+def _update_download_status_sync(message_id: int, status: str, downloaded_bytes: int, path: Optional[str] = None) -> None:
     with sqlite3.connect(DATABASE_PATH) as conn:
         if path is not None:
-            conn.execute(
-                "UPDATE messages SET download_status = ?, downloaded_bytes = ?, path = ? WHERE message_id = ?",
-                (status, downloaded_bytes, path, message_id)
-            )
+            conn.execute("UPDATE messages SET download_status = ?, downloaded_bytes = ?, path = ? WHERE message_id = ?", (status, downloaded_bytes, path, message_id))
         else:
-            conn.execute(
-                "UPDATE messages SET download_status = ?, downloaded_bytes = ? WHERE message_id = ?",
-                (status, downloaded_bytes, message_id)
-            )
+            conn.execute("UPDATE messages SET download_status = ?, downloaded_bytes = ? WHERE message_id = ?", (status, downloaded_bytes, message_id))
         conn.commit()
 
-async def update_download_status(
-    message_id: int,
-    status: str,
-    downloaded_bytes: int,
-    path: Optional[str] = None
-) -> None:
+async def update_download_status(message_id: int, status: str, downloaded_bytes: int, path: Optional[str] = None) -> None:
     await asyncio.to_thread(_update_download_status_sync, message_id, status, downloaded_bytes, path)
 
 def _delete_cached_message_sync(message_id: int) -> None:
@@ -187,10 +176,7 @@ async def delete_cached_message(message_id: int) -> None:
 def _record_download_history_sync(message_id: int, filename: str, file_size: int, path: str) -> None:
     with sqlite3.connect(DATABASE_PATH) as conn:
         now = datetime.now().isoformat()
-        conn.execute(
-            "INSERT INTO download_history (message_id, filename, file_size, completed_at, path) VALUES (?, ?, ?, ?, ?)",
-            (message_id, filename, file_size, now, path)
-        )
+        conn.execute("INSERT INTO download_history (message_id, filename, file_size, completed_at, path) VALUES (?, ?, ?, ?, ?)", (message_id, filename, file_size, now, path))
         conn.commit()
 
 async def record_download_history(message_id: int, filename: str, file_size: int, path: str) -> None:
@@ -207,10 +193,7 @@ async def get_max_message_id() -> int:
 def _get_message_sync(message_id: int) -> Optional[MessageMetadata]:
     with sqlite3.connect(DATABASE_PATH) as conn:
         conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT message_id, filename, extension, file_size, mime_type, upload_date, download_status, downloaded_bytes, path FROM messages WHERE message_id = ?",
-            (message_id,)
-        ).fetchone()
+        row = conn.execute("SELECT message_id, filename, extension, file_size, mime_type, upload_date, download_status, downloaded_bytes, path FROM messages WHERE message_id = ?", (message_id,)).fetchone()
         if not row:
             return None
         return MessageMetadata(
@@ -232,6 +215,7 @@ def _clear_cache_sync() -> None:
     with sqlite3.connect(DATABASE_PATH) as conn:
         conn.execute("DELETE FROM messages")
         conn.execute("DELETE FROM download_history")
+        conn.execute("DELETE FROM settings")
         conn.commit()
 
 async def clear_cache() -> None:
