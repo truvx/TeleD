@@ -20,6 +20,7 @@ class Downloader:
         self.active_jobs: Dict[int, DownloadJob] = {}
         self.workers: List[asyncio.Task] = []
         self._running = False
+        self.is_paused = False
         
         self.on_progress: List[Callable[[DownloadJob], None]] = []
         self.on_completed: List[Callable[[int, str], None]] = []  # msg_id, path
@@ -30,13 +31,13 @@ class Downloader:
             return
         self._running = True
         os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+        asyncio.create_task(self.restore_queue_from_db())
         self.workers = [asyncio.create_task(self._worker()) for _ in range(self.concurrency)]
 
     async def stop(self) -> None:
         self._running = False
         for worker in self.workers:
             worker.cancel()
-        
         if self.workers:
             await asyncio.gather(*self.workers, return_exceptions=True)
         self.workers = []
@@ -45,16 +46,64 @@ class Downloader:
             await update_download_status(msg_id, "pending", job.downloaded_bytes)
         self.active_jobs.clear()
 
+    async def restore_queue_from_db(self) -> None:
+        """Reload pending and paused downloads from SQLite so queue survives app restarts."""
+        all_cached = await get_cached_messages()
+        for msg in all_cached:
+            if msg.download_status in ("pending", "paused"):
+                await self.add_to_queue(msg.message_id)
+
     async def add_to_queue(self, message_id: int) -> None:
         if message_id in self.queued_ids or message_id in self.active_jobs:
             return
         self.queued_ids.add(message_id)
-        await update_download_status(message_id, "pending", 0)
+        status = "paused" if self.is_paused else "pending"
+        await update_download_status(message_id, status, 0)
         await self.queue.put(message_id)
+
+    async def pause_queue(self) -> None:
+        """Pause all pending and active queue downloads."""
+        self.is_paused = True
+        for msg_id, job in list(self.active_jobs.items()):
+            job.status = "paused"
+            await update_download_status(msg_id, "paused", job.downloaded_bytes)
+
+    async def resume_queue(self) -> None:
+        """Resume queue downloads."""
+        self.is_paused = False
+        for msg_id, job in list(self.active_jobs.items()):
+            if job.status == "paused":
+                job.status = "pending"
+                await update_download_status(msg_id, "pending", job.downloaded_bytes)
+
+    async def cancel_queue(self) -> None:
+        """Clear and cancel all queued and active downloads."""
+        while not self.queue.empty():
+            try:
+                msg_id = self.queue.get_nowait()
+                await update_download_status(msg_id, "cancelled", 0)
+            except Exception:
+                break
+        self.queued_ids.clear()
+        
+        for msg_id in list(self.active_jobs.keys()):
+            await update_download_status(msg_id, "cancelled", 0)
+        self.active_jobs.clear()
+
+    async def retry_failed(self) -> None:
+        """Re-enqueue all failed downloads."""
+        all_cached = await get_cached_messages()
+        for msg in all_cached:
+            if msg.download_status == "failed":
+                await self.add_to_queue(msg.message_id)
 
     async def _worker(self) -> None:
         while self._running:
             try:
+                if self.is_paused:
+                    await asyncio.sleep(0.5)
+                    continue
+
                 msg_id = await self.queue.get()
                 self.queued_ids.discard(msg_id)
                 
@@ -65,17 +114,11 @@ class Downloader:
                     self.queue.task_done()
                     continue
                 
-                job = DownloadJob(
-                    message_id=msg_id,
-                    filename=msg_meta.filename,
-                    file_size=msg_meta.file_size,
-                    downloaded_bytes=0,
-                    status="pending"
-                )
+                job = DownloadJob(message_id=msg_id, filename=msg_meta.filename, file_size=msg_meta.file_size, downloaded_bytes=0, status="pending")
                 self.active_jobs[msg_id] = job
                 
                 success = False
-                while job.retries <= job.max_retries and not success:
+                while job.retries <= job.max_retries and not success and not self.is_paused:
                     try:
                         await self._download_file(job)
                         success = True
@@ -186,6 +229,11 @@ class Downloader:
         try:
             async with aiofiles.open(local_path, mode) as f:
                 async for chunk in self.client_wrapper.client.iter_download(msg.media, offset=local_size):
+                    if self.is_paused:
+                        job.status = "paused"
+                        await update_download_status(job.message_id, "paused", job.downloaded_bytes)
+                        return
+
                     await f.write(chunk)
                     job.downloaded_bytes += len(chunk)
                     
@@ -194,16 +242,10 @@ class Downloader:
                     if elapsed >= 0.5:
                         bytes_diff = job.downloaded_bytes - last_bytes
                         current_speed = bytes_diff / elapsed
-                        
-                        if job.speed == 0.0:
-                            job.speed = current_speed
-                        else:
-                            job.speed = 0.7 * job.speed + 0.3 * current_speed
-                            
+                        job.speed = current_speed if job.speed == 0.0 else (0.7 * job.speed + 0.3 * current_speed)
                         remaining = job.file_size - job.downloaded_bytes
                         job.eta = remaining / job.speed if job.speed > 0 else float("inf")
                         job.progress = (job.downloaded_bytes / job.file_size) * 100.0 if job.file_size > 0 else 0.0
-                        
                         last_time = now
                         last_bytes = job.downloaded_bytes
                         await update_download_status(job.message_id, "downloading", job.downloaded_bytes)

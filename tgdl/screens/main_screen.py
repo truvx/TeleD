@@ -23,6 +23,9 @@ class MainScreen(Screen):
         ("ctrl+a", "select_all", "Select All"),
         ("ctrl+d", "clear_selection", "Clear Select"),
         ("enter", "download_selected", "Download"),
+        ("p", "toggle_pause_queue", "Pause/Resume Queue"),
+        ("x", "cancel_queue", "Cancel Queue"),
+        ("alt+r", "retry_failed", "Retry Failed"),
         ("delete,backspace", "remove_cache_entry", "Delete Cache"),
         ("escape", "clear_search", "Esc/Clear"),
         ("o", "cycle_sorting", "Sort"),
@@ -48,12 +51,10 @@ class MainScreen(Screen):
 
     def __init__(self, browser: Browser, downloader: Downloader, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.browser = browser
-        self.downloader = downloader
+        self.browser, self.downloader = browser, downloader
         self.selected_ids: Set[int] = set()
         self.progress_widgets: Dict[int, DownloadProgressRow] = {}
-        self.sort_by = "message_id"
-        self.sort_desc = True
+        self.sort_by, self.sort_desc = "message_id", True
         self.sort_fields = ["filename", "size", "date", "extension", "downloaded", "message_id"]
         self.categories = [None, "videos", "images", "pdf", "documents", "archives", "audio"]
         self.current_category_idx = 0
@@ -79,7 +80,6 @@ class MainScreen(Screen):
         table.cursor_type = "row"
         for title, key in [("✔", "select"), ("Filename", "filename"), ("Size", "size"), ("Type", "type"), ("Date", "date"), ("Downloaded", "downloaded"), ("Status", "status")]:
             table.add_column(title, key=key)
-
         try:
             me = await self.browser.client_wrapper.get_me()
             self.sub_title = f"Connected as: @{me.get('username') or f'User_{me.get(\"id\", 0)}'}"
@@ -114,25 +114,33 @@ class MainScreen(Screen):
         await self.reload_table()
 
     async def action_toggle_theme(self) -> None:
-        next_theme = "textual-light" if getattr(self.app, "theme", "textual-dark") == "textual-dark" else "textual-dark"
-        self.app.theme = next_theme
-        await db.set_setting("theme", next_theme)
+        self.app.theme = "textual-light" if getattr(self.app, "theme", "textual-dark") == "textual-dark" else "textual-dark"
+        await db.set_setting("theme", self.app.theme)
 
     async def action_cycle_category(self) -> None:
         self.current_category_idx = (self.current_category_idx + 1) % len(self.categories)
         await self.reload_table()
 
     async def action_cycle_sorting(self) -> None:
-        idx = (self.sort_fields.index(self.sort_by) + 1) % len(self.sort_fields)
-        self.sort_by = self.sort_fields[idx]
+        self.sort_by = self.sort_fields[(self.sort_fields.index(self.sort_by) + 1) % len(self.sort_fields)]
         await db.set_setting("sort_by", self.sort_by)
         await db.set_setting("sort_desc", str(self.sort_desc).lower())
         await self.reload_table()
 
+    async def action_toggle_pause_queue(self) -> None:
+        await (self.downloader.resume_queue() if self.downloader.is_paused else self.downloader.pause_queue())
+        await self.reload_table()
+
+    async def action_cancel_queue(self) -> None:
+        await self.downloader.cancel_queue()
+        await self.reload_table()
+
+    async def action_retry_failed(self) -> None:
+        await self.downloader.retry_failed()
+        await self.reload_table()
+
     async def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
-        col_key = str(event.column_key.value)
-        key_map = {"filename": "filename", "type": "extension", "size": "size", "date": "date", "downloaded": "downloaded"}
-        target = key_map.get(col_key, "message_id")
+        target = {"filename": "filename", "type": "extension", "size": "size", "date": "date", "downloaded": "downloaded"}.get(str(event.column_key.value), "message_id")
         self.sort_desc = not self.sort_desc if self.sort_by == target else True
         self.sort_by = target
         await db.set_setting("sort_by", self.sort_by)
@@ -160,24 +168,23 @@ class MainScreen(Screen):
         cat = self.categories[self.current_category_idx]
         messages = await self.browser.load_messages(search_query=query, sort_by=self.sort_by, sort_desc=self.sort_desc, category_filter=cat)
         cnt, total_bytes = await db.get_filtered_totals(search_query=query, category_filter=cat)
-
         table = self.query_one("#files-table", DataTable)
         table.clear()
 
         cat_label = f"[{cat.upper()}] " if cat else ""
+        paused_str = " (PAUSED)" if self.downloader.is_paused else ""
         if search_bar and query:
-            search_bar.placeholder = f"🔍 {cat_label}Search ({cnt} items, {format_bytes(total_bytes)})..."
+            search_bar.placeholder = f"🔍 {cat_label}Search ({cnt} items, {format_bytes(total_bytes)}){paused_str}..."
         elif search_bar:
-            search_bar.placeholder = f"🔍 {cat_label}Type to search... (ESC clear, C filter, TAB focus)"
+            search_bar.placeholder = f"🔍 {cat_label}Type to search... (P pause, X cancel, ESC clear){paused_str}"
 
         for msg in messages:
             sel_text = "✔" if msg.message_id in self.selected_ids else " "
             badge = get_colored_file_badge(msg.filename, msg.mime_type, msg.extension)
             fn_disp = highlight_text(msg.filename, query) if query else msg.filename
             is_dl = "[bold green]Yes[/]" if msg.download_status == "completed" else "[dim]No[/]"
-            st_map = {"completed": "[bold green]Completed[/]", "failed": "[bold red]Failed[/]", "downloading": "[bold yellow]Downloading[/]"}
+            st_map = {"completed": "[bold green]Completed[/]", "failed": "[bold red]Failed[/]", "downloading": "[bold yellow]Downloading[/]", "paused": "[bold yellow]Paused[/]"}
             status_markup = st_map.get(msg.download_status, f"[bold cyan]{msg.download_status.title()}[/]")
-
             table.add_row(sel_text, fn_disp, format_bytes(msg.file_size), badge, msg.upload_date[:10] if msg.upload_date else "", is_dl, status_markup, key=str(msg.message_id))
 
         try:
@@ -259,7 +266,8 @@ class MainScreen(Screen):
         q_cnt = self.downloader.queue.qsize() + len(self.downloader.queued_ids)
         sel_bytes = sum((await db.get_message(mid)).file_size for mid in list(self.selected_ids) if await db.get_message(mid))
         try:
-            self.query_one("#counter-bar", CounterBar).update_counts(selected=len(self.selected_ids), selected_bytes=sel_bytes, downloaded=dl_cnt, queue=q_cnt)
+            cbar = self.query_one("#counter-bar", CounterBar)
+            cbar.update_counts(selected=len(self.selected_ids), selected_bytes=sel_bytes, downloaded=dl_cnt, queue=q_cnt)
         except Exception:
             pass
 
@@ -287,7 +295,7 @@ class MainScreen(Screen):
                         self.progress_widgets.pop(mid, None)
                     except Exception:
                         pass
-                asyncio.create_task(remove_widget(msg_id, widget))
+                asyncio.create_task(remove_widget(mid, widget))
 
         try:
             self.query_one("#stat-active", StatCard).update_value(str(len(active_jobs)))
