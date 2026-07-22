@@ -179,13 +179,11 @@ class MainScreen(Screen):
             search_bar.placeholder = f"🔍 {cat_label}Type to search... (P pause, X cancel, ESC clear){paused_str}"
 
         for msg in messages:
-            sel_text = "✔" if msg.message_id in self.selected_ids else " "
             badge = get_colored_file_badge(msg.filename, msg.mime_type, msg.extension)
             fn_disp = highlight_text(msg.filename, query) if query else msg.filename
             is_dl = "[bold green]Yes[/]" if msg.download_status == "completed" else "[dim]No[/]"
             st_map = {"completed": "[bold green]Completed[/]", "failed": "[bold red]Failed[/]", "downloading": "[bold yellow]Downloading[/]", "paused": "[bold yellow]Paused[/]"}
-            status_markup = st_map.get(msg.download_status, f"[bold cyan]{msg.download_status.title()}[/]")
-            table.add_row(sel_text, fn_disp, format_bytes(msg.file_size), badge, msg.upload_date[:10] if msg.upload_date else "", is_dl, status_markup, key=str(msg.message_id))
+            table.add_row("✔" if msg.message_id in self.selected_ids else " ", fn_disp, format_bytes(msg.file_size), badge, msg.upload_date[:10] if msg.upload_date else "", is_dl, st_map.get(msg.download_status, f"[bold cyan]{msg.download_status.title()}[/]"), key=str(msg.message_id))
 
         try:
             self.query_one("#stat-speed", StatCard).update_value(format_bytes(total_bytes))
@@ -200,17 +198,16 @@ class MainScreen(Screen):
 
     def action_toggle_selection(self) -> None:
         table = self.query_one("#files-table", DataTable)
-        if table.row_count == 0 or table.cursor_coordinate is None:
-            return
-        row_key = table.get_row_key_at_index(table.cursor_coordinate.row)
-        msg_id = int(row_key.value)
-        if msg_id in self.selected_ids:
-            self.selected_ids.remove(msg_id)
-            table.update_cell(row_key, "select", " ")
-        else:
-            self.selected_ids.add(msg_id)
-            table.update_cell(row_key, "select", "✔")
-        asyncio.create_task(self._update_counters())
+        if table.row_count > 0 and table.cursor_coordinate is not None:
+            row_key = table.get_row_key_at_index(table.cursor_coordinate.row)
+            msg_id = int(row_key.value)
+            if msg_id in self.selected_ids:
+                self.selected_ids.remove(msg_id)
+                table.update_cell(row_key, "select", " ")
+            else:
+                self.selected_ids.add(msg_id)
+                table.update_cell(row_key, "select", "✔")
+            asyncio.create_task(self._update_counters())
 
     async def action_select_all(self) -> None:
         table = self.query_one("#files-table", DataTable)
@@ -229,13 +226,12 @@ class MainScreen(Screen):
 
     async def action_remove_cache_entry(self) -> None:
         table = self.query_one("#files-table", DataTable)
-        if table.row_count == 0 or table.cursor_coordinate is None:
-            return
-        row_key = table.get_row_key_at_index(table.cursor_coordinate.row)
-        msg_id = int(row_key.value)
-        await db.delete_cached_message(msg_id)
-        self.selected_ids.discard(msg_id)
-        await self.reload_table()
+        if table.row_count > 0 and table.cursor_coordinate is not None:
+            row_key = table.get_row_key_at_index(table.cursor_coordinate.row)
+            msg_id = int(row_key.value)
+            await db.delete_cached_message(msg_id)
+            self.selected_ids.discard(msg_id)
+            await self.reload_table()
 
     async def action_download_selected(self) -> None:
         table = self.query_one("#files-table", DataTable)
@@ -266,8 +262,7 @@ class MainScreen(Screen):
         q_cnt = self.downloader.queue.qsize() + len(self.downloader.queued_ids)
         sel_bytes = sum((await db.get_message(mid)).file_size for mid in list(self.selected_ids) if await db.get_message(mid))
         try:
-            cbar = self.query_one("#counter-bar", CounterBar)
-            cbar.update_counts(selected=len(self.selected_ids), selected_bytes=sel_bytes, downloaded=dl_cnt, queue=q_cnt)
+            self.query_one("#counter-bar", CounterBar).update_counts(selected=len(self.selected_ids), selected_bytes=sel_bytes, downloaded=dl_cnt, queue=q_cnt)
         except Exception:
             pass
 

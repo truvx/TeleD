@@ -12,6 +12,8 @@ from tgdl.models import DownloadJob, MessageMetadata
 from tgdl.telegram_client import TelegramClientWrapper
 
 class Downloader:
+    """Production download engine supporting streaming, resume, verification, and safety."""
+
     def __init__(self, client_wrapper: TelegramClientWrapper, concurrency: int = CONCURRENT_DOWNLOADS) -> None:
         self.client_wrapper = client_wrapper
         self.concurrency = concurrency
@@ -23,8 +25,8 @@ class Downloader:
         self.is_paused = False
         
         self.on_progress: List[Callable[[DownloadJob], None]] = []
-        self.on_completed: List[Callable[[int, str], None]] = []  # msg_id, path
-        self.on_failed: List[Callable[[int, str], None]] = []     # msg_id, reason
+        self.on_completed: List[Callable[[int, str], None]] = []
+        self.on_failed: List[Callable[[int, str], None]] = []
 
     def start(self) -> None:
         if self._running:
@@ -47,7 +49,6 @@ class Downloader:
         self.active_jobs.clear()
 
     async def restore_queue_from_db(self) -> None:
-        """Reload pending and paused downloads from SQLite so queue survives app restarts."""
         all_cached = await get_cached_messages()
         for msg in all_cached:
             if msg.download_status in ("pending", "paused"):
@@ -62,14 +63,12 @@ class Downloader:
         await self.queue.put(message_id)
 
     async def pause_queue(self) -> None:
-        """Pause all pending and active queue downloads."""
         self.is_paused = True
         for msg_id, job in list(self.active_jobs.items()):
             job.status = "paused"
             await update_download_status(msg_id, "paused", job.downloaded_bytes)
 
     async def resume_queue(self) -> None:
-        """Resume queue downloads."""
         self.is_paused = False
         for msg_id, job in list(self.active_jobs.items()):
             if job.status == "paused":
@@ -77,7 +76,6 @@ class Downloader:
                 await update_download_status(msg_id, "pending", job.downloaded_bytes)
 
     async def cancel_queue(self) -> None:
-        """Clear and cancel all queued and active downloads."""
         while not self.queue.empty():
             try:
                 msg_id = self.queue.get_nowait()
@@ -91,7 +89,6 @@ class Downloader:
         self.active_jobs.clear()
 
     async def retry_failed(self) -> None:
-        """Re-enqueue all failed downloads."""
         all_cached = await get_cached_messages()
         for msg in all_cached:
             if msg.download_status == "failed":
@@ -194,6 +191,7 @@ class Downloader:
         local_path = os.path.join(DOWNLOAD_DIR, job.filename)
         local_size = 0
 
+        # Skip existing complete files or align 4KB chunk boundary
         if os.path.exists(local_path):
             local_size = os.path.getsize(local_path)
             if local_size >= job.file_size:
@@ -255,6 +253,11 @@ class Downloader:
         except asyncio.CancelledError:
             await update_download_status(job.message_id, "pending", job.downloaded_bytes)
             raise
+
+        # Automatic file size verification
+        actual_size = os.path.getsize(local_path)
+        if actual_size != job.file_size:
+            raise ValueError(f"File size mismatch: downloaded {actual_size} bytes, expected {job.file_size} bytes.")
 
         job.status = "completed"
         job.progress = 100.0
