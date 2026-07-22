@@ -1,4 +1,5 @@
 import humanize
+import re
 from typing import Union, Tuple
 
 def format_bytes(bytes_count: Union[int, float]) -> str:
@@ -54,39 +55,41 @@ def get_file_type(filename: str, mime_type: str = "") -> str:
     return "FILE"
 
 def get_colored_file_badge(filename: str, mime_type: str = "", extension: str = "") -> str:
-    """Return Rich formatted colored badge with icon for file type.
-    
-    Color rules:
-      - Video: Blue
-      - PDF: Red
-      - ZIP / RAR / Archive: Yellow
-      - Images: Magenta
-      - Audio: Green
-      - Default: Cyan
-    """
+    """Return Rich formatted colored badge with icon for file type."""
     ext = (extension or "").lstrip(".").upper() or get_file_type(filename, mime_type)
     mime = (mime_type or "").lower()
     fn = (filename or "").lower()
     
-    # Video (Blue)
     if ext in ("MP4", "MKV", "AVI", "MOV", "WEBM", "FLV", "VID") or "video" in mime or fn.endswith((".mp4", ".mkv", ".avi", ".mov")):
         return f"[bold blue]🎬 {ext}[/]"
         
-    # PDF (Red)
     if ext == "PDF" or "pdf" in mime or fn.endswith(".pdf"):
         return f"[bold red]📄 {ext}[/]"
         
-    # ZIP / RAR / Archives (Yellow)
     if ext in ("ZIP", "RAR", "7Z", "TAR", "GZ", "BZ2", "XZ", "ISO") or "compressed" in mime or "zip" in mime or "rar" in mime or fn.endswith((".zip", ".rar", ".7z", ".tar.gz", ".iso")):
         return f"[bold yellow]📦 {ext}[/]"
         
-    # Images (Magenta)
     if ext in ("JPG", "JPEG", "PNG", "GIF", "WEBP", "BMP", "SVG", "IMG") or "image" in mime or fn.endswith((".jpg", ".jpeg", ".png", ".gif")):
         return f"[bold magenta]🖼 {ext}[/]"
         
-    # Audio (Green)
     if ext in ("MP3", "FLAC", "WAV", "OGG", "M4A", "AAC", "AUD") or "audio" in mime or fn.endswith((".mp3", ".flac", ".wav", ".ogg")):
         return f"[bold green]🎵 {ext}[/]"
         
-    # Default (Cyan)
     return f"[bold cyan]📁 {ext}[/]"
+
+def highlight_text(text: str, query: str) -> str:
+    """Highlight query substring in text using Rich markup."""
+    if not query or not text:
+        return text
+        
+    q = query.strip().lstrip("*.").strip()
+    if not q:
+        return text
+        
+    try:
+        pattern = re.escape(q)
+        def repl(match):
+            return f"[bold yellow]{match.group(0)}[/]"
+        return re.sub(pattern, repl, text, flags=re.IGNORECASE)
+    except Exception:
+        return text

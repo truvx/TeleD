@@ -9,7 +9,7 @@ from tgdl.browser import Browser
 from tgdl.downloader import Downloader
 from tgdl.widgets import DownloadProgressRow, StatCard, CounterBar
 from tgdl.models import DownloadJob
-from tgdl.utils.helpers import format_bytes, format_speed, get_colored_file_badge
+from tgdl.utils.helpers import format_bytes, format_speed, get_colored_file_badge, highlight_text
 from tgdl.screens.error_modal import ErrorModal
 import tgdl.database as db
 
@@ -79,7 +79,8 @@ class MainScreen(Screen):
 
         try:
             me = await self.browser.client_wrapper.get_me()
-            self.sub_title = f"Connected as: @{me.get('username') or f'User_{me.get(\"id\", 0)}'}"
+            username = me.get("username") or f"User_{me.get('id', 0)}"
+            self.sub_title = f"Connected as: @{username}"
         except Exception:
             self.sub_title = "Connected as: @TelegramUser"
 
@@ -139,22 +140,30 @@ class MainScreen(Screen):
 
     async def reload_table(self) -> None:
         try:
-            query = self.query_one("#search-bar", Input).value.strip() or None
+            search_bar = self.query_one("#search-bar", Input)
+            query = search_bar.value.strip() or None
         except Exception:
+            search_bar = None
             query = None
 
         messages = await self.browser.load_messages(search_query=query, sort_by=self.sort_by, sort_desc=self.sort_desc)
         table = self.query_one("#files-table", DataTable)
         table.clear()
 
+        if search_bar and query:
+            search_bar.placeholder = f"🔍 Search ({len(messages)} items)..."
+        elif search_bar:
+            search_bar.placeholder = "🔍 Type to search... (ESC clear, TAB focus)"
+
         for msg in messages:
             sel_text = "✔" if msg.message_id in self.selected_ids else " "
             badge = get_colored_file_badge(msg.filename, msg.mime_type, msg.extension)
+            fn_disp = highlight_text(msg.filename, query) if query else msg.filename
             is_dl = "[bold green]Yes[/]" if msg.download_status == "completed" else "[dim]No[/]"
             st_map = {"completed": "[bold green]Completed[/]", "failed": "[bold red]Failed[/]", "downloading": "[bold yellow]Downloading[/]"}
             status_markup = st_map.get(msg.download_status, f"[bold cyan]{msg.download_status.title()}[/]")
 
-            table.add_row(sel_text, msg.filename, format_bytes(msg.file_size), badge, msg.upload_date[:10] if msg.upload_date else "", is_dl, status_markup, key=str(msg.message_id))
+            table.add_row(sel_text, fn_disp, format_bytes(msg.file_size), badge, msg.upload_date[:10] if msg.upload_date else "", is_dl, status_markup, key=str(msg.message_id))
 
         await self._update_counters()
 
