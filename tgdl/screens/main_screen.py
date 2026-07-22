@@ -106,6 +106,8 @@ class MainScreen(SelectionMixin, Screen):
         asyncio.create_task(self._init_async())
 
     async def _init_async(self) -> None:
+        """Load settings and data in background — TUI is already visible at this point."""
+        # Load saved settings first (fast, local DB)
         try:
             self.sort_by = await db.get_setting("sort_by", "message_id")
             self.sort_desc = (await db.get_setting("sort_desc", "true")) == "true"
@@ -115,12 +117,21 @@ class MainScreen(SelectionMixin, Screen):
             self.app.theme = await db.get_setting("theme", "textual-dark")
         except Exception:
             pass
+
+        # Connect Telegram client (may take time on slow networks — non-blocking here)
+        try:
+            await self.browser.client_wrapper.connect()
+        except Exception:
+            pass
+
+        # Fetch username for subtitle
         try:
             me = await self.browser.client_wrapper.get_me()
             uname = me.get("username") or f"User_{me.get('id', 0)}"
             self.sub_title = f"Connected as: @{uname}"
         except Exception:
-            self.sub_title = "Connected"
+            self.sub_title = "Offline — press Ctrl+R to sync"
+
         await self.reload_table()
 
     # ── Actions ───────────────────────────────────────────────────────────

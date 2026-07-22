@@ -1,5 +1,4 @@
 import asyncio
-import os
 import sys
 from typing import Optional
 from textual.app import App
@@ -17,12 +16,9 @@ logger = get_logger()
 
 
 class TeleDApp(App):
-    """TeleD Telegram Downloader — btop-style TUI."""
+    """TeleD — btop-style Telegram file manager TUI."""
 
     TITLE = "TeleD - Telegram Downloader"
-    CSS = """
-    Screen { background: $background; }
-    """
 
     def __init__(self, client_wrapper: Optional[TelegramClientWrapper] = None, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -34,12 +30,9 @@ class TeleDApp(App):
         container.register(Downloader, self.downloader)
 
     async def on_mount(self) -> None:
+        # Init DB synchronously (fast, local)
         await init_db()
-        # Connect silently — MainScreen handles offline/disconnected state gracefully
-        try:
-            await self.client_wrapper.connect()
-        except Exception as e:
-            logger.warning(f"Telegram connection on startup failed (offline mode): {e}")
+        # Push screen immediately — connection happens in background inside MainScreen
         await self.push_screen(MainScreen(self.browser, self.downloader))
 
     async def on_unmount(self) -> None:
@@ -48,14 +41,13 @@ class TeleDApp(App):
 
 
 def prompt_credentials() -> None:
-    """Prompt user for API credentials and write to .env."""
     print("\n=== TeleD First-Time Setup ===")
-    print("Get your API credentials from: https://my.telegram.org/")
+    print("Get your API credentials at: https://my.telegram.org/")
     try:
         api_id = input("Enter API ID (integer): ").strip()
         api_hash = input("Enter API Hash (string): ").strip()
         if not api_id.isdigit():
-            print("Error: API ID must be an integer. Exiting.")
+            print("Error: API ID must be a number.")
             sys.exit(1)
         env_path = config.BASE_DIR / ".env"
         with open(env_path, "w", encoding="utf-8") as f:
@@ -64,40 +56,43 @@ def prompt_credentials() -> None:
         print(f"Saved to {env_path}\n")
         config.reload_config()
     except (KeyboardInterrupt, EOFError):
-        print("\nSetup cancelled.")
+        print("\nCancelled.")
         sys.exit(0)
 
 
-async def run_interactive_login() -> None:
-    """Run phone/OTP login in terminal before launching TUI."""
+async def run_login() -> None:
+    """Run interactive Telegram login in terminal before TUI opens."""
     client = TelegramClientWrapper()
     try:
         is_auth = await client.connect()
         if not is_auth:
-            print("Logging in to Telegram...")
+            print("Logging in to Telegram (enter phone number when prompted)...")
             await client.authorize_interactive()
             print("Login successful!\n")
+        else:
+            print("Session found, loading TeleD...\n")
     except Exception as e:
-        print(f"\nWarning: Could not connect to Telegram: {e}")
-        print("TeleD will open in offline mode. Use Ctrl+R inside the app to sync when connected.\n")
+        print(f"Warning: {e}")
+        print("Opening TeleD in offline mode. Press Ctrl+R inside to sync when connected.\n")
     finally:
-        await client.disconnect()
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
 
 
 def main() -> None:
-    # Step 1: Ensure credentials exist
     if not config.is_config_valid():
         prompt_credentials()
         if not config.is_config_valid():
-            print("Error: Invalid configuration. Exiting.")
+            print("Invalid configuration. Exiting.")
             sys.exit(1)
 
-    # Step 2: Run login flow (non-fatal if network is down)
-    asyncio.run(run_interactive_login())
+    # Login in terminal BEFORE TUI (so phone/OTP prompts work)
+    asyncio.run(run_login())
 
-    # Step 3: Launch TUI — always opens regardless of connection state
-    app = TeleDApp()
-    app.run()
+    # Launch TUI — on_mount is non-blocking, screen renders instantly
+    TeleDApp().run()
 
 
 if __name__ == "__main__":
