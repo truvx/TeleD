@@ -25,7 +25,7 @@ class SettingsScreen(ModalScreen):
         color: $accent;
         text-style: bold;
         margin-bottom: 1;
-        content-align: center middle;
+        text-align: center;
     }
     .field-label {
         color: $text;
@@ -37,7 +37,7 @@ class SettingsScreen(ModalScreen):
     }
     #button-row {
         margin-top: 2;
-        content-align: right middle;
+        align: right middle;
     }
     Button {
         margin-left: 1;

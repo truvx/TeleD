@@ -127,7 +127,6 @@ class CounterBar(Static):
         color: $text;
         height: 1;
         padding: 0 1;
-        content-align: left center;
         text-style: bold;
     }
     """
