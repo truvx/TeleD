@@ -11,6 +11,7 @@ from tgdl.widgets import DownloadProgressRow, StatCard, CounterBar
 from tgdl.models import DownloadJob
 from tgdl.utils.helpers import format_bytes, format_speed, get_colored_file_badge, highlight_text
 from tgdl.screens.error_modal import ErrorModal
+from tgdl.screens.settings_screen import SettingsScreen
 import tgdl.database as db
 
 class MainScreen(Screen):
@@ -26,6 +27,7 @@ class MainScreen(Screen):
         ("p", "toggle_pause_queue", "Pause/Resume Queue"),
         ("x", "cancel_queue", "Cancel Queue"),
         ("alt+r", "retry_failed", "Retry Failed"),
+        ("s", "open_settings", "Settings"),
         ("delete,backspace", "remove_cache_entry", "Delete Cache"),
         ("escape", "clear_search", "Esc/Clear"),
         ("o", "cycle_sorting", "Sort"),
@@ -117,6 +119,9 @@ class MainScreen(Screen):
         self.app.theme = "textual-light" if getattr(self.app, "theme", "textual-dark") == "textual-dark" else "textual-dark"
         await db.set_setting("theme", self.app.theme)
 
+    async def action_open_settings(self) -> None:
+        self.app.push_screen(SettingsScreen(), lambda saved: asyncio.create_task(self.reload_table()) if saved else None)
+
     async def action_cycle_category(self) -> None:
         self.current_category_idx = (self.current_category_idx + 1) % len(self.categories)
         await self.reload_table()
@@ -176,7 +181,7 @@ class MainScreen(Screen):
         if search_bar and query:
             search_bar.placeholder = f"🔍 {cat_label}Search ({cnt} items, {format_bytes(total_bytes)}){paused_str}..."
         elif search_bar:
-            search_bar.placeholder = f"🔍 {cat_label}Type to search... (P pause, X cancel, ESC clear){paused_str}"
+            search_bar.placeholder = f"🔍 {cat_label}Type to search... (P pause, X cancel, S settings, ESC clear){paused_str}"
 
         for msg in messages:
             badge = get_colored_file_badge(msg.filename, msg.mime_type, msg.extension)
