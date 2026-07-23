@@ -1,63 +1,60 @@
-"""Production download engine: streaming, resume, corruption checks, and robust error handling."""
+"""Production download engine: uses a dedicated per-download thread+loop to avoid
+blocking Textual's event loop with Telethon's async I/O operations."""
 import asyncio
 import os
 import time
 import socket
-import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Dict, List, Optional
-import aiofiles
-from telethon.errors.rpcerrorlist import FloodWaitError
-from telethon.errors import (
-    AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError,
-    AuthKeyInvalidError, RPCError
-)
 
 import tgdl.config as config
 import tgdl.database as db
-from tgdl.models import DownloadJob, MessageMetadata
+from tgdl.models import DownloadJob
 from tgdl.telegram_client import TelegramClientWrapper
 
 
 class Downloader:
-    """Production download engine supporting streaming, resume, corruption checks, and error handling."""
+    """Download engine that runs each Telegram download in an isolated thread+event-loop
+    to prevent Textual's coroutine scheduling from starving Telethon's MTProto receiver."""
 
     def __init__(self, client_wrapper: TelegramClientWrapper, concurrency: Optional[int] = None) -> None:
         self.client_wrapper = client_wrapper
         self.concurrency = concurrency or config.CONCURRENT_DOWNLOADS
-        # Use a list-based queue so we don't need asyncio primitives that may have loop issues
         self._queue: List[int] = []
         self.active_jobs: Dict[int, DownloadJob] = {}
         self.workers: List[asyncio.Task] = []
         self._running = False
         self.is_paused = False
         self._queue_event: Optional[asyncio.Event] = None
+        # Thread pool: one thread per concurrent download slot
+        self._executor: Optional[ThreadPoolExecutor] = None
 
         self.on_progress: List[Callable[[DownloadJob], None]] = []
         self.on_completed: List[Callable[[int, str], None]] = []
         self.on_failed: List[Callable[[int, str], Optional[str]]] = []
 
-    def _get_or_create_event(self) -> asyncio.Event:
-        """Get or create the queue event, ensuring it's tied to the running loop."""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.Event()
-        if self._queue_event is None or getattr(self._queue_event, '_loop', None) != loop:
-            self._queue_event = asyncio.Event()
-        return self._queue_event
+    # ─────────────────────────────────────────────────────────────────────────
+    # Lifecycle
+    # ─────────────────────────────────────────────────────────────────────────
 
     def start(self) -> None:
         if self._running:
             return
         self._running = True
         os.makedirs(config.DOWNLOAD_DIR, exist_ok=True)
-        # Create the event in the current loop
         self._queue_event = asyncio.Event()
-        self.workers = [asyncio.ensure_future(self._worker()) for _ in range(self.concurrency)]
+        self._executor = ThreadPoolExecutor(
+            max_workers=self.concurrency,
+            thread_name_prefix="teled_dl",
+        )
+        self.workers = [
+            asyncio.ensure_future(self._worker())
+            for _ in range(self.concurrency)
+        ]
 
     async def stop(self) -> None:
         self._running = False
-        # Wake up all workers so they can exit
         if self._queue_event:
             self._queue_event.set()
         for worker in self.workers:
@@ -65,6 +62,9 @@ class Downloader:
         if self.workers:
             await asyncio.gather(*self.workers, return_exceptions=True)
         self.workers = []
+        if self._executor:
+            self._executor.shutdown(wait=False)
+            self._executor = None
         for msg_id, job in list(self.active_jobs.items()):
             try:
                 await db.update_download_status(msg_id, "pending", job.downloaded_bytes)
@@ -73,15 +73,17 @@ class Downloader:
         self.active_jobs.clear()
         self._queue.clear()
 
-    async def add_to_queue(self, message_id: int) -> bool:
-        """Add a file to the download queue. Returns True if added, False if already queued/downloading."""
-        if message_id in self.active_jobs:
-            return False  # Already queued or downloading
+    # ─────────────────────────────────────────────────────────────────────────
+    # Queue management
+    # ─────────────────────────────────────────────────────────────────────────
 
+    async def add_to_queue(self, message_id: int) -> bool:
+        """Add a file to the download queue. Returns True if added."""
+        if message_id in self.active_jobs:
+            return False
         msg_meta = await db.get_message(message_id)
         if not msg_meta:
             return False
-
         status = "paused" if self.is_paused else "queued"
         job = DownloadJob(
             message_id=message_id,
@@ -95,13 +97,10 @@ class Downloader:
             await db.update_download_status(message_id, status, 0)
         except Exception:
             pass
-
         if not self.is_paused:
             self._queue.append(message_id)
-            # Signal workers that there's work to do
             if self._queue_event:
                 self._queue_event.set()
-
         return True
 
     async def pause_queue(self) -> None:
@@ -142,40 +141,27 @@ class Downloader:
             if msg.download_status == "failed":
                 await self.add_to_queue(msg.message_id)
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Worker loop (runs on Textual's event loop, delegates I/O to thread)
+    # ─────────────────────────────────────────────────────────────────────────
+
     async def _worker(self) -> None:
-        """Download worker task. Runs continuously, picking jobs from the queue."""
         while self._running:
             try:
-                # Pop next job from list queue
-                msg_id = None
-                if self._queue:
-                    msg_id = self._queue.pop(0)
+                msg_id = self._queue.pop(0) if self._queue else None
 
                 if msg_id is None:
-                    # No work — wait for signal (with timeout to avoid blocking forever)
-                    if self._queue_event:
-                        try:
-                            self._queue_event.clear()
-                            await asyncio.wait_for(self._queue_event.wait(), timeout=1.0)
-                        except asyncio.TimeoutError:
-                            pass
-                    else:
-                        await asyncio.sleep(0.5)
+                    # Nothing to do — yield and wait for signal
+                    await asyncio.sleep(0.2)
                     continue
 
                 if self.is_paused:
-                    # Put it back and wait
                     self._queue.insert(0, msg_id)
                     await asyncio.sleep(0.3)
                     continue
 
                 job = self.active_jobs.get(msg_id)
-                if not job:
-                    # Job was cancelled before we picked it up
-                    continue
-
-                if job.status == "paused":
-                    # Don't process paused jobs
+                if not job or job.status == "paused":
                     continue
 
                 job.status = "downloading"
@@ -191,77 +177,9 @@ class Downloader:
                         except Exception:
                             pass
                         raise
-                    except FloodWaitError as e:
-                        job.status = f"flood wait ({e.seconds}s)"
-                        try:
-                            await db.update_download_status(msg_id, "pending", job.downloaded_bytes)
-                        except Exception:
-                            pass
-                        await asyncio.sleep(e.seconds + 1)
-                    except PermissionError:
-                        job.status = "failed"
-                        job.error_msg = "Permission Denied: Cannot write to download folder."
-                        try:
-                            await db.update_download_status(msg_id, "failed", job.downloaded_bytes)
-                        except Exception:
-                            pass
-                        for cb in self.on_failed:
-                            try:
-                                cb(msg_id, job.error_msg)
-                            except Exception:
-                                pass
-                        break
-                    except OSError as e:
-                        if getattr(e, "errno", 0) == 28 or "No space left" in str(e):
-                            job.status = "failed"
-                            job.error_msg = "Disk Full: No space left on target disk."
-                            try:
-                                await db.update_download_status(msg_id, "failed", job.downloaded_bytes)
-                            except Exception:
-                                pass
-                            for cb in self.on_failed:
-                                try:
-                                    cb(msg_id, job.error_msg)
-                                except Exception:
-                                    pass
-                            break
-                        else:
-                            await self._handle_transient_error(job, str(e))
-                    except (AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError, AuthKeyInvalidError):
-                        job.status = "failed"
-                        job.error_msg = "Session Expired: Please re-authorize your session."
-                        try:
-                            await db.update_download_status(msg_id, "failed", job.downloaded_bytes)
-                        except Exception:
-                            pass
-                        for cb in self.on_failed:
-                            try:
-                                cb(msg_id, job.error_msg)
-                            except Exception:
-                                pass
-                        break
-                    except (asyncio.TimeoutError, socket.error, ConnectionError) as e:
-                        await self._handle_transient_error(job, f"Network Error: {e}")
-                    except ValueError as e:
-                        if "File size mismatch" in str(e) or "corrupted" in str(e).lower():
-                            await self._handle_transient_error(job, f"Corrupted: {e}")
-                        else:
-                            job.status = "failed"
-                            job.error_msg = str(e)
-                            try:
-                                await db.update_download_status(msg_id, "failed", job.downloaded_bytes)
-                            except Exception:
-                                pass
-                            for cb in self.on_failed:
-                                try:
-                                    cb(msg_id, str(e))
-                                except Exception:
-                                    pass
-                            break
                     except Exception as e:
-                        await self._handle_transient_error(job, str(e))
+                        await self._handle_error(job, e)
 
-                # Grace period — keep the card visible for 3s after completion/failure
                 if job.status in ("completed", "failed"):
                     await asyncio.sleep(3)
 
@@ -272,7 +190,69 @@ class Downloader:
             except Exception:
                 await asyncio.sleep(1)
 
-    async def _handle_transient_error(self, job: DownloadJob, err_text: str) -> None:
+    async def _handle_error(self, job: DownloadJob, exc: Exception) -> None:
+        """Classify and handle a download error: retry or fail permanently."""
+        from telethon.errors.rpcerrorlist import FloodWaitError
+        from telethon.errors import (
+            AuthKeyUnregisteredError, SessionRevokedError,
+            UserDeactivatedError, AuthKeyInvalidError,
+        )
+
+        err_str = str(exc)
+
+        if isinstance(exc, FloodWaitError):
+            job.status = f"flood wait ({exc.seconds}s)"
+            try:
+                await db.update_download_status(job.message_id, "pending", job.downloaded_bytes)
+            except Exception:
+                pass
+            await asyncio.sleep(exc.seconds + 1)
+            return
+
+        if isinstance(exc, (AuthKeyUnregisteredError, SessionRevokedError,
+                            UserDeactivatedError, AuthKeyInvalidError)):
+            job.status = "failed"
+            job.error_msg = "Session expired — please re-authorize."
+            try:
+                await db.update_download_status(job.message_id, "failed", job.downloaded_bytes)
+            except Exception:
+                pass
+            for cb in self.on_failed:
+                try:
+                    cb(job.message_id, job.error_msg)
+                except Exception:
+                    pass
+            return
+
+        if isinstance(exc, PermissionError):
+            job.status = "failed"
+            job.error_msg = "Permission denied: cannot write to download folder."
+            try:
+                await db.update_download_status(job.message_id, "failed", job.downloaded_bytes)
+            except Exception:
+                pass
+            for cb in self.on_failed:
+                try:
+                    cb(job.message_id, job.error_msg)
+                except Exception:
+                    pass
+            return
+
+        if isinstance(exc, OSError) and (getattr(exc, "errno", 0) == 28 or "No space left" in err_str):
+            job.status = "failed"
+            job.error_msg = "Disk full."
+            try:
+                await db.update_download_status(job.message_id, "failed", job.downloaded_bytes)
+            except Exception:
+                pass
+            for cb in self.on_failed:
+                try:
+                    cb(job.message_id, job.error_msg)
+                except Exception:
+                    pass
+            return
+
+        # Transient errors — retry with back-off
         job.retries += 1
         if job.retries <= job.max_retries:
             job.status = f"retry {job.retries}/{job.max_retries}"
@@ -283,60 +263,48 @@ class Downloader:
             await asyncio.sleep(min(2 ** job.retries, 30))
         else:
             job.status = "failed"
-            job.error_msg = err_text
+            job.error_msg = err_str[:120]
             try:
                 await db.update_download_status(job.message_id, "failed", job.downloaded_bytes)
             except Exception:
                 pass
             for cb in self.on_failed:
                 try:
-                    cb(job.message_id, err_text)
+                    cb(job.message_id, job.error_msg)
                 except Exception:
                     pass
 
-    async def _ensure_connected(self) -> None:
-        """Ensure the Telegram client is connected. Only reconnects if truly disconnected."""
-        try:
-            if not self.client_wrapper.client or not self.client_wrapper.client.is_connected():
-                # Client is disconnected — reconnect with timeout
-                await asyncio.wait_for(self.client_wrapper.connect(), timeout=30)
-            # If is_connected() returns True, trust it — don't make extra API calls
-            # that could time out and cause false failures
-        except asyncio.TimeoutError:
-            raise ConnectionError("Telegram reconnection timed out. Check your network.")
+    # ─────────────────────────────────────────────────────────────────────────
+    # Core download — runs in a dedicated thread+event-loop
+    # ─────────────────────────────────────────────────────────────────────────
 
     async def _download_file(self, job: DownloadJob) -> None:
-        # Ensure client connection with timeout
-        await self._ensure_connected()
-        client = self.client_wrapper.client
+        """Download one file.
 
-        # Fetch message from Telegram with timeout
-        try:
-            msgs = await asyncio.wait_for(
-                client.get_messages("me", ids=[job.message_id]),
-                timeout=30,
-            )
-        except asyncio.TimeoutError:
-            raise ConnectionError(f"Timed out fetching message #{job.message_id} from Telegram.")
-
-        if not msgs or not msgs[0] or not msgs[0].media:
-            raise ValueError(f"Telegram message #{job.message_id} not found or has no media.")
-        msg = msgs[0]
-
+        The actual Telegram I/O runs inside run_in_executor() so it has its own
+        asyncio event loop and is completely isolated from Textual's loop.
+        This prevents Textual's coroutine scheduler from starving Telethon's
+        internal MTProto receive tasks (which caused the '0 Bytes' hang).
+        """
         local_path = os.path.join(config.DOWNLOAD_DIR, job.filename)
         local_size = 0
 
+        # ── Resume / skip logic ───────────────────────────────────────────
         if os.path.exists(local_path):
             local_size = os.path.getsize(local_path)
             if local_size >= job.file_size:
                 if local_size == job.file_size:
-                    # Already fully downloaded
+                    # Already complete
                     job.status = "completed"
                     job.progress = 100.0
                     job.downloaded_bytes = job.file_size
                     try:
-                        await db.update_download_status(job.message_id, "completed", job.file_size, local_path)
-                        await db.record_download_history(job.message_id, job.filename, job.file_size, local_path)
+                        await db.update_download_status(
+                            job.message_id, "completed", job.file_size, local_path
+                        )
+                        await db.record_download_history(
+                            job.message_id, job.filename, job.file_size, local_path
+                        )
                     except Exception:
                         pass
                     for cb in self.on_completed:
@@ -346,17 +314,20 @@ class Downloader:
                             pass
                     return
                 else:
-                    # Larger than expected → corrupted, delete and restart
+                    # File is larger than expected — corrupted, restart
                     local_size = 0
                     try:
                         os.remove(local_path)
                     except OSError:
                         pass
             else:
-                # Partial download → align to 4KB block and resume
+                # Partial download: align to 4 KB and resume
                 local_size = (local_size // 4096) * 4096
-                with open(local_path, "r+b") as f:
-                    f.truncate(local_size)
+                try:
+                    with open(local_path, "r+b") as f:
+                        f.truncate(local_size)
+                except OSError:
+                    local_size = 0
 
         job.status = "downloading"
         job.downloaded_bytes = local_size
@@ -365,69 +336,102 @@ class Downloader:
         except Exception:
             pass
 
-        mode = "ab" if local_size > 0 else "wb"
-        last_time = time.time()
-        last_bytes = local_size
+        # ── Run the actual download in a thread ───────────────────────────
+        downloader = self  # closure reference
+        start_time = time.monotonic()
+        last_update = [start_time]
 
-        try:
-            async with aiofiles.open(local_path, mode) as f:
-                async for chunk in client.iter_download(msg.media, offset=local_size):
-                    if self.is_paused:
-                        job.status = "paused"
-                        try:
-                            await db.update_download_status(job.message_id, "paused", job.downloaded_bytes)
-                        except Exception:
-                            pass
-                        return
+        def _thread_download() -> str:
+            """Runs in ThreadPoolExecutor with its own asyncio event loop."""
+            thread_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(thread_loop)
+            exc_holder = [None]
 
-                    if not self._running:
-                        raise asyncio.CancelledError()
+            async def _async_body():
+                from telethon import TelegramClient
 
-                    await f.write(chunk)
-                    job.downloaded_bytes += len(chunk)
+                # Fresh client in this thread's loop — completely isolated
+                client = TelegramClient(
+                    config.SESSION_PATH,
+                    config.API_ID,
+                    config.API_HASH,
+                    connection_retries=5,
+                    retry_delay=2,
+                    timeout=20,
+                )
+                await client.connect()
 
-                    now = time.time()
-                    elapsed = now - last_time
-                    if elapsed >= 0.1:
-                        bytes_diff = job.downloaded_bytes - last_bytes
-                        current_speed = bytes_diff / elapsed
-                        job.speed = current_speed
-                        job.avg_speed = (
-                            current_speed if job.avg_speed == 0.0
-                            else (0.8 * job.avg_speed + 0.2 * current_speed)
-                        )
-                        remaining = job.file_size - job.downloaded_bytes
-                        job.eta = remaining / job.avg_speed if job.avg_speed > 0 else float("inf")
-                        job.progress = (
-                            (job.downloaded_bytes / job.file_size) * 100.0
-                            if job.file_size > 0 else 0.0
-                        )
-                        last_time = now
-                        last_bytes = job.downloaded_bytes
-                        try:
-                            await db.update_download_status(job.message_id, "downloading", job.downloaded_bytes)
-                        except Exception:
-                            pass
-                        for cb in self.on_progress:
-                            try:
-                                cb(job)
-                            except Exception:
-                                pass
-                await f.flush()
-
-        except asyncio.CancelledError:
-            try:
-                await db.update_download_status(job.message_id, "cancelled", job.downloaded_bytes)
-            except Exception:
-                pass
-            if os.path.exists(local_path) and os.path.getsize(local_path) == 0:
                 try:
-                    os.remove(local_path)
-                except OSError:
-                    pass
-            raise
+                    msgs = await client.get_messages("me", ids=[job.message_id])
+                    if not msgs or not msgs[0] or not msgs[0].media:
+                        raise ValueError(
+                            f"Message #{job.message_id} not found or has no media."
+                        )
+                    msg = msgs[0]
 
-        # Verify file integrity
+                    mode = "ab" if local_size > 0 else "wb"
+                    with open(local_path, mode) as f:
+                        async for chunk in client.iter_download(
+                            msg.media, offset=local_size
+                        ):
+                            # Check for external stop/cancel
+                            if not downloader._running:
+                                raise asyncio.CancelledError()
+
+                            f.write(chunk)  # sync write — fine in a thread
+                            job.downloaded_bytes += len(chunk)
+
+                            now = time.monotonic()
+                            elapsed = now - last_update[0]
+                            if elapsed >= 0.2:
+                                total_elapsed = now - start_time
+                                bytes_since_start = job.downloaded_bytes - local_size
+                                job.speed = bytes_since_start / total_elapsed if total_elapsed > 0 else 0.0
+                                remaining = job.file_size - job.downloaded_bytes
+                                job.eta = remaining / job.speed if job.speed > 0 else float("inf")
+                                job.progress = (
+                                    (job.downloaded_bytes / job.file_size * 100.0)
+                                    if job.file_size > 0 else 0.0
+                                )
+                                last_update[0] = now
+                                for cb in downloader.on_progress:
+                                    try:
+                                        cb(job)
+                                    except Exception:
+                                        pass
+                        f.flush()
+
+                finally:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+
+            try:
+                thread_loop.run_until_complete(_async_body())
+            except Exception as e:
+                exc_holder[0] = e
+            finally:
+                try:
+                    thread_loop.close()
+                except Exception:
+                    pass
+                asyncio.set_event_loop(None)
+
+            if exc_holder[0] is not None:
+                raise exc_holder[0]
+            return local_path
+
+        # Await the thread from Textual's loop (non-blocking for Textual)
+        if not self._executor:
+            raise RuntimeError("Downloader not started.")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self._executor, _thread_download)
+
+        # ── Verify and finalize ───────────────────────────────────────────
+        if not os.path.exists(local_path):
+            raise ValueError("Download finished but file not found on disk.")
+
         actual_size = os.path.getsize(local_path)
         if actual_size != job.file_size:
             try:
@@ -435,20 +439,25 @@ class Downloader:
             except OSError:
                 pass
             raise ValueError(
-                f"File size mismatch: expected {job.file_size}, got {actual_size}."
+                f"File size mismatch: expected {job.file_size} bytes, got {actual_size}."
             )
 
-        # Force final progress update (important for small files that finish in < 0.1s)
         job.status = "completed"
         job.progress = 100.0
         job.downloaded_bytes = job.file_size
         job.speed = 0.0
         job.eta = 0.0
+
         try:
-            await db.update_download_status(job.message_id, "completed", job.file_size, local_path)
-            await db.record_download_history(job.message_id, job.filename, job.file_size, local_path)
+            await db.update_download_status(
+                job.message_id, "completed", job.file_size, local_path
+            )
+            await db.record_download_history(
+                job.message_id, job.filename, job.file_size, local_path
+            )
         except Exception:
             pass
+
         for cb in self.on_progress:
             try:
                 cb(job)
