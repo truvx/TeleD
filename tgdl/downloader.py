@@ -85,9 +85,14 @@ class Downloader:
         if not msg_meta:
             return False
         status = "paused" if self.is_paused else "queued"
+        filename = msg_meta.filename
+        if not filename:
+            ext = msg_meta.extension or ".unknown"
+            filename = f"media_{message_id}{ext}"
+            
         job = DownloadJob(
             message_id=message_id,
-            filename=msg_meta.filename,
+            filename=filename,
             file_size=msg_meta.file_size,
             downloaded_bytes=0,
             status=status,
@@ -349,10 +354,20 @@ class Downloader:
 
             async def _async_body():
                 from telethon import TelegramClient
+                from telethon.sessions.string import StringSession
 
-                # Fresh client in this thread's loop — completely isolated
+                # Extract the session credentials directly from the main loop's client.
+                # This completely bypasses the SQLite session file on disk, avoiding
+                # the dreaded 'database is locked' SQLite deadlock when using multiple threads.
+                main_session = downloader.client_wrapper.client.session
+                ss = StringSession()
+                ss.set_dc(main_session.dc_id, main_session.server_address, main_session.port)
+                ss.auth_key = main_session.auth_key
+
+                # Fresh client in this thread's loop — completely isolated from UI,
+                # and uses an in-memory session to prevent DB contention.
                 client = TelegramClient(
-                    config.SESSION_PATH,
+                    ss,
                     config.API_ID,
                     config.API_HASH,
                     connection_retries=5,
