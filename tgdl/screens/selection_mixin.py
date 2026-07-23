@@ -1,5 +1,6 @@
 """Selection and download action methods for MainScreen."""
 import asyncio
+from typing import Optional
 from textual.widgets import DataTable
 import tgdl.database as db
 from tgdl.screens.error_modal import ErrorModal
@@ -10,10 +11,18 @@ from tgdl.utils.helpers import format_bytes
 class SelectionMixin:
     """Mixin providing file selection, download queue, and counter logic for MainScreen."""
 
+    def _get_cursor_row_key(self, table: DataTable):
+        if table.row_count > 0 and table.cursor_coordinate is not None:
+            try:
+                return table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+            except Exception:
+                return None
+        return None
+
     def action_toggle_selection(self) -> None:
         table = self.query_one("#files-table", DataTable)
-        if table.row_count > 0 and table.cursor_coordinate is not None:
-            row_key = table.get_row_key_at_index(table.cursor_coordinate.row)
+        row_key = self._get_cursor_row_key(table)
+        if row_key is not None:
             msg_id = int(row_key.value)
             if msg_id in self.selected_ids:
                 self.selected_ids.remove(msg_id)
@@ -52,8 +61,10 @@ class SelectionMixin:
     async def action_download_selected(self) -> None:
         table = self.query_one("#files-table", DataTable)
         target_ids = set(self.selected_ids)
-        if not target_ids and table.row_count > 0 and table.cursor_coordinate is not None:
-            target_ids.add(int(table.get_row_key_at_index(table.cursor_coordinate.row).value))
+        if not target_ids:
+            row_key = self._get_cursor_row_key(table)
+            if row_key is not None:
+                target_ids.add(int(row_key.value))
         if not target_ids:
             return
         for msg_id in target_ids:

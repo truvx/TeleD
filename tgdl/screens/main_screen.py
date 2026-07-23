@@ -265,11 +265,11 @@ class MainScreen(SelectionMixin, Screen):
 
         for msg_id, widget in list(self.progress_widgets.items()):
             if msg_id not in active_jobs:
-                async def _rm(mid: int, w: DownloadProgressRow) -> None:
+                async def _rm(target_id: int, w: DownloadProgressRow) -> None:
                     await asyncio.sleep(3)
-                    try: w.remove(); self.progress_widgets.pop(mid, None)
+                    try: w.remove(); self.progress_widgets.pop(target_id, None)
                     except Exception: pass
-                asyncio.create_task(_rm(mid, widget))
+                asyncio.create_task(_rm(msg_id, widget))
 
         try: self.query_one("#stat-active", StatCard).update_value(str(len(active_jobs)))
         except Exception: pass
