@@ -102,8 +102,7 @@ class MainScreen(SelectionMixin, Screen):
         table_dl = self.query_one("#downloaded-table", DataTable)
         table_dl.cursor_type = "row"
         for title, key in [
-            ("✔", "select"), ("Filename", "filename"), ("Size", "size"),
-            ("Type", "type"), ("Date", "date")
+            ("✔", "select"), ("Filename", "filename"), ("Size", "size")
         ]:
             table_dl.add_column(title, key=key)
 
@@ -277,14 +276,23 @@ class MainScreen(SelectionMixin, Screen):
         self._dl_count = 0
         for msg in messages:
             if msg.download_status == "completed": self._dl_count += 1
-            table.add_row(
-                "✔" if msg.message_id in self.selected_ids else " ",
-                highlight_text(msg.filename, query) if query else msg.filename,
-                format_bytes(msg.file_size),
-                get_colored_file_badge(msg.filename, msg.mime_type, msg.extension),
-                msg.upload_date[:10] if msg.upload_date else "",
-                key=str(msg.message_id)
-            )
+            
+            if is_downloaded_tab:
+                table.add_row(
+                    "✔" if msg.message_id in self.selected_ids else " ",
+                    highlight_text(msg.filename, query) if query else msg.filename,
+                    format_bytes(msg.file_size),
+                    key=str(msg.message_id)
+                )
+            else:
+                table.add_row(
+                    "✔" if msg.message_id in self.selected_ids else " ",
+                    highlight_text(msg.filename, query) if query else msg.filename,
+                    format_bytes(msg.file_size),
+                    get_colored_file_badge(msg.filename, msg.mime_type, msg.extension),
+                    msg.upload_date[:10] if msg.upload_date else "",
+                    key=str(msg.message_id)
+                )
         try: self.query_one("#stat-speed", StatCard).update_value(format_bytes(total_bytes))
         except Exception: pass
         await self._update_counters()
