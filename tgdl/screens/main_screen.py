@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Dict, Set, Optional
 from textual.app import ComposeResult
 from textual.screen import Screen
@@ -122,7 +123,7 @@ class MainScreen(SelectionMixin, Screen):
             me = await self.browser.client_wrapper.get_me()
             uname = me.get("username") or f"User_{me.get('id', 0)}"
             self.set_subtitle(f"Connected as: @{uname}")
-        except Exception as e:
+        except Exception:
             self.set_subtitle("Offline — press Ctrl+R to sync when connected")
 
         count, _ = await db.get_filtered_totals()
@@ -168,16 +169,16 @@ class MainScreen(SelectionMixin, Screen):
         pbar.progress = 0
         prev = self.sub_title or ""
         self.set_subtitle(prev + " — Syncing…")
-        last_reload = [0]
+        last_update = [0.0]
 
         async def on_sync_progress(scanned: int, total: int, found_media: int) -> None:
-            if total > 0:
-                pbar.update(total=total, progress=scanned)
-            st = f"Syncing {scanned}/{total} messages ({found_media} media items found)..."
-            self.set_subtitle(st)
-            if found_media - last_reload[0] >= 15:
-                last_reload[0] = found_media
-                await self.reload_table()
+            now = time.time()
+            if now - last_update[0] >= 0.25 or scanned == total:
+                last_update[0] = now
+                if total > 0:
+                    pbar.update(total=total, progress=scanned)
+                st = f"Syncing {scanned}/{total} messages ({found_media} media items found)..."
+                self.set_subtitle(st)
 
         try:
             n = await self.browser.sync_messages(progress_callback=on_sync_progress)
@@ -190,7 +191,7 @@ class MainScreen(SelectionMixin, Screen):
             pbar.display = False
 
     async def action_sync_telegram(self) -> None:
-        await self._do_sync(); await self.reload_table()
+        asyncio.create_task(self._do_sync())
 
     async def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
         col_map = {"filename": "filename", "type": "extension", "size": "size", "date": "date", "downloaded": "downloaded"}
