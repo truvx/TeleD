@@ -24,6 +24,7 @@ class MainScreen(SelectionMixin, Screen):
         ("enter", "download_selected", "Download"),
         ("d", "download_selected", "Download"),
         ("space", "toggle_selection", "Select"),
+        ("p", "preview_file", "Preview"),
         ("a", "toggle_select_all", "Select All"),
         ("u", "toggle_pause_queue", "Pause/Resume"),
         ("x", "cancel_queue", "Cancel Queue"),

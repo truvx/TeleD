@@ -134,6 +134,32 @@ class SelectionMixin:
         await self.downloader.retry_failed()
         await self.reload_table()
 
+    async def action_preview_file(self) -> None:
+        table = self._get_active_table()
+        row_key = self._get_cursor_row_key(table)
+        if not row_key:
+            return
+
+        msg_id = int(row_key.value)
+        msg_meta = await db.get_message(msg_id)
+
+        if msg_meta and msg_meta.download_status == "completed" and msg_meta.path:
+            import os
+            import subprocess
+            if os.path.exists(msg_meta.path):
+                try:
+                    subprocess.Popen(
+                        ["qlmanage", "-p", msg_meta.path],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                except Exception as e:
+                    self.notify(f"Preview failed: {e}", severity="error")
+            else:
+                self.notify("File not found on disk.", severity="error")
+        else:
+            self.notify("Please download the file first to preview it.", severity="warning")
+
     async def _update_counters(self) -> None:
         active_jobs = self.downloader.active_jobs
         q_cnt = len(active_jobs)
