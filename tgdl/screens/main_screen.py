@@ -86,6 +86,11 @@ class MainScreen(SelectionMixin, Screen):
         yield CounterBar(id="counter-bar")
         yield Footer()
 
+    def set_subtitle(self, text: str) -> None:
+        self.sub_title = text
+        try: self.app.sub_title = text
+        except Exception: pass
+
     async def on_mount(self) -> None:
         table = self.query_one("#files-table", DataTable)
         table.cursor_type = "row"
@@ -112,16 +117,15 @@ class MainScreen(SelectionMixin, Screen):
             saved = await db.get_setting("search_query", "")
             if saved: self.query_one("#search-bar", Input).value = saved
             self.app.theme = await db.get_setting("theme", "textual-dark")
-        except Exception:
-            pass
+        except Exception: pass
 
         try:
             await self.browser.client_wrapper.connect()
             me = await self.browser.client_wrapper.get_me()
             uname = me.get("username") or f"User_{me.get('id', 0)}"
-            self.sub_title = f"Connected as: @{uname}"
+            self.set_subtitle(f"Connected as: @{uname}")
         except Exception:
-            self.sub_title = "Offline — press Ctrl+R to sync when connected"
+            self.set_subtitle("Offline — press Ctrl+R to sync when connected")
 
         count, _ = await db.get_filtered_totals()
         if count == 0:
@@ -166,19 +170,24 @@ class MainScreen(SelectionMixin, Screen):
         pbar.display = True
         pbar.progress = 0
         prev = self.sub_title or ""
-        self.sub_title = prev + " — Syncing…"
+        self.set_subtitle(prev + " — Syncing…")
+        last_reload = [0]
 
         def on_sync_progress(scanned: int, total: int, found_media: int) -> None:
             if total > 0:
                 pbar.update(total=total, progress=scanned)
-            self.sub_title = f"Syncing {scanned}/{total} messages ({found_media} media items found)..."
+            st = f"Syncing {scanned}/{total} messages ({found_media} media items found)..."
+            self.set_subtitle(st)
+            if found_media - last_reload[0] >= 15:
+                last_reload[0] = found_media
+                asyncio.create_task(self.reload_table())
 
         try:
             n = await self.browser.sync_messages(progress_callback=on_sync_progress)
-            self.sub_title = prev
+            self.set_subtitle(prev)
             await self.reload_table()
         except Exception as e:
-            self.sub_title = prev
+            self.set_subtitle(prev)
             self.app.push_screen(ErrorModal("Sync Notice", str(e), variant="warning"))
         finally:
             pbar.display = False

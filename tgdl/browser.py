@@ -10,9 +10,15 @@ class Browser:
     async def sync_messages(self, progress_callback: Optional[Callable[[int, int, int], None]] = None) -> int:
         """Fetch and cache new messages from Saved Messages incrementally."""
         max_id = await db.get_max_message_id()
-        new_messages = await self.client_wrapper.fetch_media_messages(min_id=max_id, progress_callback=progress_callback)
-        if new_messages:
-            await db.cache_messages(new_messages)
+
+        async def _on_batch(batch: List[MessageMetadata]):
+            await db.cache_messages(batch)
+
+        new_messages = await self.client_wrapper.fetch_media_messages(
+            min_id=max_id,
+            progress_callback=progress_callback,
+            batch_callback=_on_batch
+        )
         return len(new_messages)
 
     async def load_messages(

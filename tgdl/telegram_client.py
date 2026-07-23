@@ -67,7 +67,8 @@ class TelegramClientWrapper:
     async def fetch_media_messages(
         self,
         min_id: int = 0,
-        progress_callback: Optional[Callable[[int, int, int], None]] = None
+        progress_callback: Optional[Callable[[int, int, int], None]] = None,
+        batch_callback: Optional[Callable[[List[MessageMetadata]], None]] = None
     ) -> List[MessageMetadata]:
         if not self.client: raise RuntimeError("Telegram client is not connected.")
         try:
@@ -76,9 +77,10 @@ class TelegramClientWrapper:
             raise RuntimeError("Session Expired: Please re-authorize Telegram session.")
 
         messages: List[MessageMetadata] = []
+        batch_buffer: List[MessageMetadata] = []
         try:
             res = await self.client.get_messages("me", limit=1)
-            total = res.total if res else 0
+            total = res.total if res else 100
             scanned = 0
             async for msg in self.client.iter_messages("me", min_id=min_id):
                 scanned += 1
@@ -102,16 +104,29 @@ class TelegramClientWrapper:
                             largest = msg.photo.sizes[-1]
                             if hasattr(largest, "w") and hasattr(largest, "h") and largest.w and largest.h: resolution = f"{largest.w}x{largest.h}"
 
-                        messages.append(
-                            MessageMetadata(
-                                message_id=msg.id, filename=filename, extension=ext, file_size=file_helper.size or 0,
-                                mime_type=file_helper.mime_type or "application/octet-stream", upload_date=msg.date.isoformat() if msg.date else "",
-                                download_status="pending", downloaded_bytes=0, chat_id=msg.chat_id or 0,
-                                path=None, file_hash=f"tg_{msg.id}", duration=duration, resolution=resolution
-                            )
+                        meta = MessageMetadata(
+                            message_id=msg.id, filename=filename, extension=ext, file_size=file_helper.size or 0,
+                            mime_type=file_helper.mime_type or "application/octet-stream", upload_date=msg.date.isoformat() if msg.date else "",
+                            download_status="pending", downloaded_bytes=0, chat_id=msg.chat_id or 0,
+                            path=None, file_hash=f"tg_{msg.id}", duration=duration, resolution=resolution
                         )
-                if progress_callback and (scanned % 10 == 0 or scanned == total):
-                    progress_callback(scanned, total, len(messages))
+                        messages.append(meta)
+                        batch_buffer.append(meta)
+
+                if batch_buffer and (len(batch_buffer) >= 15 or scanned == total):
+                    if batch_callback:
+                        if asyncio.iscoroutinefunction(batch_callback): await batch_callback(list(batch_buffer))
+                        else: batch_callback(list(batch_buffer))
+                    batch_buffer.clear()
+
+                if progress_callback:
+                    if asyncio.iscoroutinefunction(progress_callback): await progress_callback(scanned, total, len(messages))
+                    else: progress_callback(scanned, total, len(messages))
+
+            if batch_buffer and batch_callback:
+                if asyncio.iscoroutinefunction(batch_callback): await batch_callback(list(batch_buffer))
+                else: batch_callback(list(batch_buffer))
+
         except (asyncio.TimeoutError, socket.error, ConnectionError) as e:
             raise ConnectionError(f"Network Connection Interrupted: {e}") from e
         except RPCError as e:
