@@ -18,35 +18,46 @@ class TelegramClientWrapper:
     def __init__(self, session_path: Optional[str] = None) -> None:
         self.session_path = session_path or config.SESSION_PATH
         self.client: Optional[TelegramClient] = None
+        self._lock: Optional[asyncio.Lock] = None
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     async def connect(self) -> bool:
-        session_path = self.session_path or config.SESSION_PATH
-        session_dir = os.path.dirname(session_path)
-        if session_dir:
-            os.makedirs(session_dir, exist_ok=True)
+        async with self.lock:
+            if self.client and self.client.is_connected():
+                return await self.client.is_user_authorized()
 
-        if not config.API_ID or not config.API_HASH:
-            raise ValueError("API_ID or API_HASH missing in configuration.")
+            session_path = self.session_path or config.SESSION_PATH
+            session_dir = os.path.dirname(session_path)
+            if session_dir:
+                os.makedirs(session_dir, exist_ok=True)
 
-        proxy = config.get_proxy()
-        try:
-            if not self.client:
-                kwargs = {"connection_retries": 5, "retry_delay": 1, "timeout": 10}
-                if proxy: kwargs["proxy"] = proxy
-                self.client = TelegramClient(session_path, config.API_ID, config.API_HASH, **kwargs)
-            if not self.client.is_connected():
-                await self.client.connect()
-            return await self.client.is_user_authorized()
-        except (AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError, AuthKeyInvalidError) as e:
-            raise RuntimeError(f"Session Expired: {e}") from e
-        except (asyncio.TimeoutError, socket.error, ConnectionError, OSError) as e:
-            raise ConnectionError(
-                f"Network Connection Failed: Cannot reach Telegram servers.\n"
-                f"Your network/ISP or firewall may be blocking direct Telegram IP connections.\n"
-                f"If you are behind a firewall or restricted network, please enable a VPN or add SOCKS5/HTTP Proxy settings in .env (e.g. TELEGRAM_PROXY_HOST=127.0.0.1)."
-            ) from e
-        except ApiIdInvalidError as e:
-            raise ValueError("Invalid Telegram API_ID or API_HASH credentials.") from e
+            if not config.API_ID or not config.API_HASH:
+                raise ValueError("API_ID or API_HASH missing in configuration.")
+
+            proxy = config.get_proxy()
+            try:
+                if not self.client:
+                    kwargs = {"connection_retries": 5, "retry_delay": 1, "timeout": 10}
+                    if proxy: kwargs["proxy"] = proxy
+                    self.client = TelegramClient(session_path, config.API_ID, config.API_HASH, **kwargs)
+                if not self.client.is_connected():
+                    await self.client.connect()
+                return await self.client.is_user_authorized()
+            except (AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError, AuthKeyInvalidError) as e:
+                raise RuntimeError(f"Session Expired: {e}") from e
+            except (asyncio.TimeoutError, socket.error, ConnectionError, OSError) as e:
+                raise ConnectionError(
+                    f"Network Connection Failed: Cannot reach Telegram servers.\n"
+                    f"Your network/ISP or firewall may be blocking direct Telegram IP connections.\n"
+                    f"If you are behind a firewall or restricted network, please enable a VPN or add SOCKS5/HTTP Proxy settings in .env (e.g. TELEGRAM_PROXY_HOST=127.0.0.1)."
+                ) from e
+            except ApiIdInvalidError as e:
+                raise ValueError("Invalid Telegram API_ID or API_HASH credentials.") from e
 
     async def authorize_interactive(self) -> None:
         if not self.client: await self.connect()
@@ -54,10 +65,11 @@ class TelegramClientWrapper:
             await self.client.start()
 
     async def disconnect(self) -> None:
-        if self.client:
-            try: await self.client.disconnect()
-            except Exception: pass
-            self.client = None
+        async with self.lock:
+            if self.client:
+                try: await self.client.disconnect()
+                except Exception: pass
+                self.client = None
 
     async def get_me(self) -> dict:
         if not self.client or not await self.client.is_user_authorized(): return {}
