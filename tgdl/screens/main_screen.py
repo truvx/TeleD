@@ -111,18 +111,22 @@ class MainScreen(SelectionMixin, Screen):
             self.app.theme = await db.get_setting("theme", "textual-dark")
         except Exception: pass
 
+        await self.reload_table()
+
         try:
             await self.browser.client_wrapper.connect()
             me = await self.browser.client_wrapper.get_me()
-            uname = me.get("username") or f"User_{me.get('id', 0)}"
-            self.set_subtitle(f"Connected as: @{uname}")
+            if me:
+                uname = me.get("username") or f"User_{me.get('id', 0)}"
+                self.set_subtitle(f"Connected as: @{uname}")
+            else:
+                self.set_subtitle("Offline — press Ctrl+R to sync when connected")
         except Exception:
             self.set_subtitle("Offline — press Ctrl+R to sync when connected")
 
         count, _ = await db.get_filtered_totals()
         if count == 0:
             await self._do_sync(auto=True)
-        await self.reload_table()
 
     # ── Actions ───────────────────────────────────────────────────────────
 
@@ -257,7 +261,7 @@ class MainScreen(SelectionMixin, Screen):
                     await asyncio.sleep(3)
                     try: w.remove(); self.progress_widgets.pop(target_id, None)
                     except Exception: pass
-                asyncio.create_task(_rm(msg_id, widget))
+                asyncio.create_task(_rm(target_id, widget))
 
         try: self.query_one("#stat-active", StatCard).update_value(str(len(active_jobs)))
         except Exception: pass

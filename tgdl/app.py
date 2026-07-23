@@ -58,8 +58,8 @@ def prompt_credentials() -> None:
         sys.exit(0)
 
 
-async def run_login() -> None:
-    """Run interactive Telegram login in terminal before TUI opens."""
+async def run_login_if_needed() -> None:
+    """Only run interactive terminal login if user is not authorized."""
     client = TelegramClientWrapper()
     try:
         is_auth = await client.connect()
@@ -67,15 +67,12 @@ async def run_login() -> None:
             print("Logging in to Telegram (enter phone number when prompted)...")
             await client.authorize_interactive()
             print("Login successful!\n")
-        else:
-            print("Session found, loading TeleD...\n")
-    except Exception as e:
-        print(f"Warning: {e}")
-        print("Opening TeleD in offline mode. Press Ctrl+R inside to sync when connected.\n")
+    except Exception:
+        pass
     finally:
         try:
             await client.disconnect()
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.2)
         except Exception:
             pass
 
@@ -87,7 +84,7 @@ def main() -> None:
             print("Invalid configuration. Exiting.")
             sys.exit(1)
 
-    asyncio.run(run_login())
+    asyncio.run(run_login_if_needed())
     TeleDApp().run()
 
 
