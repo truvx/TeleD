@@ -22,12 +22,17 @@ class TelegramClientWrapper:
 
     @property
     def lock(self) -> asyncio.Lock:
-        if self._lock is None:
+        cur_loop = asyncio.get_running_loop()
+        if self._lock is None or getattr(self._lock, "_loop", None) != cur_loop:
             self._lock = asyncio.Lock()
         return self._lock
 
     async def connect(self) -> bool:
         async with self.lock:
+            cur_loop = asyncio.get_running_loop()
+            if self.client and getattr(self.client, "_loop", None) != cur_loop:
+                self.client = None
+
             if self.client and self.client.is_connected():
                 return await self.client.is_user_authorized()
 
