@@ -96,10 +96,16 @@ class TelegramClientWrapper:
         messages: List[MessageMetadata] = []
         batch_buffer: List[MessageMetadata] = []
         try:
-            res = await self.client.get_messages("me", limit=1)
+            res = await asyncio.wait_for(self.client.get_messages("me", limit=1), timeout=30.0)
             total = res.total if res else 100
             scanned = 0
-            async for msg in self.client.iter_messages("me", min_id=min_id):
+            
+            it = self.client.iter_messages("me", min_id=min_id)
+            while True:
+                try:
+                    msg = await asyncio.wait_for(it.__anext__(), timeout=30.0)
+                except StopAsyncIteration:
+                    break
                 scanned += 1
                 if msg.media and not isinstance(msg.media, MessageMediaWebPage):
                     file_helper = msg.file

@@ -224,7 +224,7 @@ class MainScreen(SelectionMixin, Screen):
                             ))
                         return
 
-                    n = await asyncio.wait_for(self.browser.sync_messages(progress_callback=on_sync_progress), timeout=300.0)
+                    n = await self.browser.sync_messages(progress_callback=on_sync_progress)
                     me = await asyncio.wait_for(self.browser.client_wrapper.get_me(), timeout=30.0)
                     uname = me.get("username") if me else None
                     self.set_subtitle(f"Connected as: @{uname}" if uname else "Connected")
