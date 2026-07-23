@@ -229,11 +229,14 @@ class MainScreen(SelectionMixin, Screen):
             await self.reload_table()
             self.notify(f"✅ Synced {n} new files!", timeout=3)
         except asyncio.TimeoutError:
+            try: await self.browser.client_wrapper.disconnect()
+            except Exception: pass
+            
             if auto:
                 self.set_subtitle("Offline — press Ctrl+R to sync when ready")
             else:
                 self.set_subtitle("Sync timed out — check connection")
-                self.app.push_screen(ErrorModal("Sync Failed", "The connection to Telegram timed out.", variant="warning"))
+                self.app.push_screen(ErrorModal("Sync Failed", "The connection to Telegram timed out. The connection has been reset.", variant="warning"))
         except Exception as e:
             err_msg = str(e)
             if auto:
