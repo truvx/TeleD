@@ -3,7 +3,7 @@ import time
 from typing import Dict, Set, Optional
 from textual.app import ComposeResult
 from textual.screen import Screen
-from textual.widgets import Header, Footer, DataTable, Input, LoadingIndicator, ProgressBar
+from textual.widgets import Header, Footer, DataTable, Input, LoadingIndicator, ProgressBar, TabbedContent, TabPane
 from textual.containers import Horizontal, Vertical, VerticalScroll
 
 from tgdl.browser import Browser
@@ -70,7 +70,11 @@ class MainScreen(SelectionMixin, Screen):
                 yield Input(placeholder="🔍 Search... (Ctrl+R to sync, ESC to clear, Ctrl+P to focus)", id="search-bar")
                 yield ProgressBar(total=100, show_percentage=True, id="sync-progress-bar")
                 yield LoadingIndicator(id="sync-spinner")
-                yield DataTable(id="files-table")
+                with TabbedContent(initial="library-tab", id="main-tabs"):
+                    with TabPane("Library", id="library-tab"):
+                        yield DataTable(id="files-table")
+                    with TabPane("Downloaded", id="downloaded-table-pane"):
+                        yield DataTable(id="downloaded-table")
             with Vertical(id="right-pane"):
                 with Horizontal(id="stats-row"):
                     yield StatCard("Filtered Size", "0 B", id="stat-speed")
@@ -90,9 +94,17 @@ class MainScreen(SelectionMixin, Screen):
         table.cursor_type = "row"
         for title, key in [
             ("✔", "select"), ("Filename", "filename"), ("Size", "size"),
-            ("Type", "type"), ("Date", "date"), ("Downloaded", "downloaded"), ("Status", "status")
+            ("Type", "type"), ("Date", "date")
         ]:
             table.add_column(title, key=key)
+
+        table_dl = self.query_one("#downloaded-table", DataTable)
+        table_dl.cursor_type = "row"
+        for title, key in [
+            ("✔", "select"), ("Filename", "filename"), ("Size", "size"),
+            ("Type", "type"), ("Date", "date")
+        ]:
+            table_dl.add_column(title, key=key)
 
         def handle_fail(mid: int, reason: str) -> None:
             # Use a notification toast instead of a blocking modal
@@ -138,6 +150,11 @@ class MainScreen(SelectionMixin, Screen):
     # ── Actions ───────────────────────────────────────────────────────────
 
     def on_resize(self) -> None: self.refresh()
+    
+    async def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        self.page = 1
+        await self.reload_table()
+
     async def action_quit(self) -> None: await self.downloader.stop(); self.app.exit()
     async def action_focus_search(self) -> None: self.query_one("#search-bar", Input).focus()
     async def action_focus_queue(self) -> None: self.query_one("#downloads-list", VerticalScroll).focus()
@@ -230,17 +247,23 @@ class MainScreen(SelectionMixin, Screen):
         except Exception:
             search_bar, query = None, None
 
+        try:
+            tabs = self.query_one("#main-tabs", TabbedContent)
+            is_downloaded_tab = (tabs.active == "downloaded-table-pane")
+        except Exception:
+            is_downloaded_tab = False
+
         cat = self.categories[self.current_category_idx]
-        self.total_count, total_bytes = await db.get_filtered_totals(search_query=query, category_filter=cat)
+        self.total_count, total_bytes = await db.get_filtered_totals(search_query=query, category_filter=cat, downloaded_only=is_downloaded_tab)
         max_pages = max(1, (self.total_count + self.page_size - 1) // self.page_size)
         if self.page > max_pages: self.page = max_pages
 
         offset = (self.page - 1) * self.page_size
         messages = await self.browser.load_messages(
             search_query=query, sort_by=self.sort_by, sort_desc=self.sort_desc,
-            category_filter=cat, limit=self.page_size, offset=offset
+            category_filter=cat, downloaded_only=is_downloaded_tab, limit=self.page_size, offset=offset
         )
-        table = self.query_one("#files-table", DataTable)
+        table = self._get_active_table()
         table.clear()
 
         cat_label = f"[{cat.upper()}] " if cat else ""
@@ -259,8 +282,6 @@ class MainScreen(SelectionMixin, Screen):
                 format_bytes(msg.file_size),
                 get_colored_file_badge(msg.filename, msg.mime_type, msg.extension),
                 msg.upload_date[:10] if msg.upload_date else "",
-                "[green]Yes[/]" if msg.download_status == "completed" else "[dim]No[/]",
-                st_map.get(msg.download_status, f"[cyan]{msg.download_status.title()}[/]"),
                 key=str(msg.message_id)
             )
         try: self.query_one("#stat-speed", StatCard).update_value(format_bytes(total_bytes))

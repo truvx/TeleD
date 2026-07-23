@@ -27,6 +27,7 @@ class Browser:
         sort_by: str = "message_id",
         sort_desc: bool = True,
         category_filter: Optional[str] = None,
+        downloaded_only: bool = False,
         limit: int = 300,
         offset: int = 0
     ) -> List[MessageMetadata]:
@@ -36,6 +37,7 @@ class Browser:
             sort_by=sort_by,
             sort_desc=sort_desc,
             category_filter=category_filter,
+            downloaded_only=downloaded_only,
             limit=limit,
             offset=offset
         )

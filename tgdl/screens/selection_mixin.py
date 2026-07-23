@@ -11,6 +11,16 @@ from tgdl.utils.helpers import format_bytes
 class SelectionMixin:
     """Mixin providing file selection, download queue, and counter logic for MainScreen."""
 
+    def _get_active_table(self) -> DataTable:
+        from textual.widgets import TabbedContent
+        try:
+            tabs = self.query_one("#main-tabs", TabbedContent)
+            if tabs.active == "downloaded-table-pane":
+                return self.query_one("#downloaded-table", DataTable)
+        except Exception:
+            pass
+        return self.query_one("#files-table", DataTable)
+
     def _get_cursor_row_key(self, table: DataTable):
         if table.row_count > 0 and table.cursor_coordinate is not None:
             try:
@@ -20,7 +30,7 @@ class SelectionMixin:
         return None
 
     def action_toggle_selection(self) -> None:
-        table = self.query_one("#files-table", DataTable)
+        table = self._get_active_table()
         row_key = self._get_cursor_row_key(table)
         if row_key is not None:
             msg_id = int(row_key.value)
@@ -37,7 +47,7 @@ class SelectionMixin:
         await self.action_download_selected()
 
     async def action_toggle_select_all(self) -> None:
-        table = self.query_one("#files-table", DataTable)
+        table = self._get_active_table()
         all_keys = list(table.rows.keys())
         if len(self.selected_ids) >= len(all_keys) and len(all_keys) > 0:
             await self.action_clear_selection()
@@ -45,14 +55,14 @@ class SelectionMixin:
             await self.action_select_all()
 
     async def action_select_all(self) -> None:
-        table = self.query_one("#files-table", DataTable)
+        table = self._get_active_table()
         for key in list(table.rows.keys()):
             self.selected_ids.add(int(key.value))
             table.update_cell(key, "select", "✔")
         await self._update_counters()
 
     async def action_clear_selection(self) -> None:
-        table = self.query_one("#files-table", DataTable)
+        table = self._get_active_table()
         for key in list(table.rows.keys()):
             self.selected_ids.discard(int(key.value))
             table.update_cell(key, "select", " ")
@@ -61,7 +71,7 @@ class SelectionMixin:
 
     async def action_download_selected(self) -> None:
         """Queue selected file(s) for download; if none selected, queue file under cursor."""
-        table = self.query_one("#files-table", DataTable)
+        table = self._get_active_table()
         target_ids = set(self.selected_ids)
 
         if not target_ids:

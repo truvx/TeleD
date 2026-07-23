@@ -107,7 +107,7 @@ def _cache_messages_sync(messages: List[MessageMetadata]) -> None:
 async def cache_messages(messages: List[MessageMetadata]) -> None:
     if messages: await asyncio.to_thread(_cache_messages_sync, messages)
 
-def _build_where_clause(search_query: Optional[str], category_filter: Optional[str]) -> Tuple[str, list]:
+def _build_where_clause(search_query: Optional[str], category_filter: Optional[str], downloaded_only: bool = False) -> Tuple[str, list]:
     where_parts, params = [], []
     if search_query:
         q = search_query.strip()
@@ -126,16 +126,19 @@ def _build_where_clause(search_query: Optional[str], category_filter: Optional[s
             "audio": ("(extension IN ('.mp3','.flac','.wav','.ogg','.m4a','.aac') OR mime_type LIKE 'audio/%')")
         }
         if c in cat_map: where_parts.append(cat_map[c])
+
+    if downloaded_only:
+        where_parts.append("(downloaded = 1)")
             
     where_str = " WHERE " + " AND ".join(where_parts) if where_parts else ""
     return where_str, params
 
-def _get_cached_messages_sync(search_query: Optional[str] = None, sort_by: str = "message_id", sort_desc: bool = True, category_filter: Optional[str] = None, limit: int = 250, offset: int = 0) -> List[MessageMetadata]:
+def _get_cached_messages_sync(search_query: Optional[str] = None, sort_by: str = "message_id", sort_desc: bool = True, category_filter: Optional[str] = None, downloaded_only: bool = False, limit: int = 250, offset: int = 0) -> List[MessageMetadata]:
     valid_cols = {"filename": "filename", "size": "size", "date": "date", "extension": "extension", "downloaded": "downloaded", "message_id": "message_id"}
     col_name = valid_cols.get(sort_by.lower(), "message_id")
     direction = "DESC" if sort_desc else "ASC"
     
-    where_str, params = _build_where_clause(search_query, category_filter)
+    where_str, params = _build_where_clause(search_query, category_filter, downloaded_only)
     query = f"SELECT message_id, filename, extension, mime_type, size, date, chat_id, downloaded, local_path, hash, duration, resolution FROM files{where_str} ORDER BY {col_name} {direction} LIMIT ? OFFSET ?"
     params.extend([limit, offset])
     
@@ -159,11 +162,11 @@ def _get_cached_messages_sync(search_query: Optional[str] = None, sort_by: str =
         _handle_db_error(e)
         return []
 
-async def get_cached_messages(search_query: Optional[str] = None, sort_by: str = "message_id", sort_desc: bool = True, category_filter: Optional[str] = None, limit: int = 250, offset: int = 0) -> List[MessageMetadata]:
-    return await asyncio.to_thread(_get_cached_messages_sync, search_query, sort_by, sort_desc, category_filter, limit, offset)
+async def get_cached_messages(search_query: Optional[str] = None, sort_by: str = "message_id", sort_desc: bool = True, category_filter: Optional[str] = None, downloaded_only: bool = False, limit: int = 250, offset: int = 0) -> List[MessageMetadata]:
+    return await asyncio.to_thread(_get_cached_messages_sync, search_query, sort_by, sort_desc, category_filter, downloaded_only, limit, offset)
 
-def _get_filtered_totals_sync(search_query: Optional[str] = None, category_filter: Optional[str] = None) -> Tuple[int, int]:
-    where_str, params = _build_where_clause(search_query, category_filter)
+def _get_filtered_totals_sync(search_query: Optional[str] = None, category_filter: Optional[str] = None, downloaded_only: bool = False) -> Tuple[int, int]:
+    where_str, params = _build_where_clause(search_query, category_filter, downloaded_only)
     query = f"SELECT COUNT(*), COALESCE(SUM(size), 0) FROM files{where_str}"
     try:
         with _get_db() as conn:
@@ -173,8 +176,8 @@ def _get_filtered_totals_sync(search_query: Optional[str] = None, category_filte
         _handle_db_error(e)
         return (0, 0)
 
-async def get_filtered_totals(search_query: Optional[str] = None, category_filter: Optional[str] = None) -> Tuple[int, int]:
-    return await asyncio.to_thread(_get_filtered_totals_sync, search_query, category_filter)
+async def get_filtered_totals(search_query: Optional[str] = None, category_filter: Optional[str] = None, downloaded_only: bool = False) -> Tuple[int, int]:
+    return await asyncio.to_thread(_get_filtered_totals_sync, search_query, category_filter, downloaded_only)
 
 def _update_download_status_sync(message_id: int, status: str, downloaded_bytes: int, path: Optional[str] = None) -> None:
     try:
