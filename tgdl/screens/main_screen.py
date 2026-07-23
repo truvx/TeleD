@@ -210,41 +210,48 @@ class MainScreen(SelectionMixin, Screen):
                 self.set_subtitle(f"Syncing {scanned}/{total} messages ({found_media} media found)...")
 
         try:
-            # Ensure client is connected and authorized before syncing
-            is_auth = await asyncio.wait_for(self.browser.client_wrapper.connect(), timeout=10.0)
-            if not is_auth:
-                self.set_subtitle("Offline — press Ctrl+R to sync when connected")
-                if not auto:
-                    self.app.push_screen(ErrorModal(
-                        "Not Authorized",
-                        "Telegram session is not authorized.\nRun `teled` in a terminal to re-login.",
-                        variant="warning",
-                    ))
-                return
+            for attempt in range(2):
+                try:
+                    # Ensure client is connected and authorized before syncing
+                    is_auth = await asyncio.wait_for(self.browser.client_wrapper.connect(), timeout=10.0)
+                    if not is_auth:
+                        self.set_subtitle("Offline — press Ctrl+R to sync when connected")
+                        if not auto:
+                            self.app.push_screen(ErrorModal(
+                                "Not Authorized",
+                                "Telegram session is not authorized.\nRun `teled` in a terminal to re-login.",
+                                variant="warning",
+                            ))
+                        return
 
-            n = await asyncio.wait_for(self.browser.sync_messages(progress_callback=on_sync_progress), timeout=30.0)
-            me = await asyncio.wait_for(self.browser.client_wrapper.get_me(), timeout=10.0)
-            uname = me.get("username") if me else None
-            self.set_subtitle(f"Connected as: @{uname}" if uname else "Connected")
-            await self.reload_table()
-            self.notify(f"✅ Synced {n} new files!", timeout=3)
-        except asyncio.TimeoutError:
-            try: await self.browser.client_wrapper.disconnect()
-            except Exception: pass
-            
-            if auto:
-                self.set_subtitle("Offline — press Ctrl+R to sync when ready")
-            else:
-                self.set_subtitle("Sync timed out — check connection")
-                self.app.push_screen(ErrorModal("Sync Failed", "The connection to Telegram timed out. The connection has been reset.", variant="warning"))
+                    n = await asyncio.wait_for(self.browser.sync_messages(progress_callback=on_sync_progress), timeout=30.0)
+                    me = await asyncio.wait_for(self.browser.client_wrapper.get_me(), timeout=10.0)
+                    uname = me.get("username") if me else None
+                    self.set_subtitle(f"Connected as: @{uname}" if uname else "Connected")
+                    await self.reload_table()
+                    self.notify(f"✅ Synced {n} new files!", timeout=3)
+                    return
+                except asyncio.TimeoutError:
+                    try: await self.browser.client_wrapper.disconnect()
+                    except Exception: pass
+                    
+                    if attempt == 0:
+                        self.set_subtitle("Reconnecting to Telegram…")
+                        continue
+                    
+                    if auto:
+                        self.set_subtitle("Offline — press Ctrl+R to sync when ready")
+                    else:
+                        self.set_subtitle("Sync timed out — check connection")
+                        self.notify("Sync failed: The connection to Telegram timed out repeatedly.", severity="error", timeout=6)
+                    return
         except Exception as e:
             err_msg = str(e)
             if auto:
-                # Silent failure on auto-sync at startup
                 self.set_subtitle("Offline — press Ctrl+R to sync when ready")
             else:
                 self.set_subtitle("Sync failed — check connection")
-                self.app.push_screen(ErrorModal("Sync Failed", err_msg, variant="warning"))
+                self.notify(f"Sync failed: {err_msg}", severity="error", timeout=6)
         finally:
             pbar.display = False
             self._is_syncing = False
