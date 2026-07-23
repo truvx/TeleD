@@ -28,6 +28,7 @@ class MainScreen(SelectionMixin, Screen):
         ("a", "toggle_select_all", "Select All"),
         ("u", "toggle_pause_queue", "Pause/Resume"),
         ("x", "cancel_queue", "Cancel Queue"),
+        ("r", "refresh_ui", "Refresh"),
         ("c", "cycle_category", "Category"),
         ("ctrl+p", "focus_search", "Search"),
         ("ctrl+r", "sync_telegram", "Sync"),
@@ -158,6 +159,10 @@ class MainScreen(SelectionMixin, Screen):
 
     def on_resize(self) -> None: self.refresh()
     
+    async def action_refresh_ui(self) -> None:
+        await self._check_deleted_files()
+        await self.reload_table()
+
     async def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         self.page = 1
         await self.reload_table()
