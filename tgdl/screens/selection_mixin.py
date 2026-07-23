@@ -32,16 +32,16 @@ class SelectionMixin:
                 table.update_cell(row_key, "select", "✔")
             asyncio.create_task(self._update_counters())
 
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        msg_id = int(event.row_key.value)
+    async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        await self.action_download_selected()
+
+    async def action_toggle_select_all(self) -> None:
         table = self.query_one("#files-table", DataTable)
-        if msg_id in self.selected_ids:
-            self.selected_ids.remove(msg_id)
-            table.update_cell(event.row_key, "select", " ")
+        all_keys = list(table.rows.keys())
+        if len(self.selected_ids) >= len(all_keys) and len(all_keys) > 0:
+            await self.action_clear_selection()
         else:
-            self.selected_ids.add(msg_id)
-            table.update_cell(event.row_key, "select", "✔")
-        asyncio.create_task(self._update_counters())
+            await self.action_select_all()
 
     async def action_select_all(self) -> None:
         table = self.query_one("#files-table", DataTable)
@@ -70,6 +70,8 @@ class SelectionMixin:
         for msg_id in target_ids:
             await self.downloader.add_to_queue(msg_id)
         self.selected_ids.clear()
+        try: self.notify(f"🚀 Queued {len(target_ids)} file(s) for download!", timeout=3)
+        except Exception: pass
         await self.reload_table()
 
     async def action_toggle_pause_queue(self) -> None:

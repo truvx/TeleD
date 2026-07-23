@@ -21,25 +21,18 @@ class MainScreen(SelectionMixin, Screen):
     """btop/LazyGit styled TeleD dashboard with 100k+ pagination and full error handling."""
 
     BINDINGS = [
-        ("ctrl+p", "focus_search", "Search"),
-        ("ctrl+f", "focus_search", "Search"),
-        ("ctrl+a", "select_all", "Select All"),
-        ("ctrl+d", "clear_selection", "Deselect"),
-        ("ctrl+r", "sync_telegram", "Refresh"),
-        ("ctrl+l", "focus_queue", "Queue"),
-        ("ctrl+s", "open_settings", "Settings"),
-        ("space", "toggle_selection", "Toggle"),
         ("enter", "download_selected", "Download"),
-        ("escape", "clear_search", "Back"),
-        ("right", "next_page", "→ Page"),
-        ("]", "next_page", "→ Page"),
-        ("left", "prev_page", "← Page"),
-        ("[", "prev_page", "← Page"),
-        ("c", "cycle_category", "Category"),
+        ("d", "download_selected", "Download"),
+        ("space", "toggle_selection", "Select"),
+        ("a", "toggle_select_all", "Select All"),
         ("u", "toggle_pause_queue", "Pause/Resume"),
         ("x", "cancel_queue", "Cancel Queue"),
-        ("alt+r", "retry_failed", "Retry"),
-        ("t", "toggle_theme", "Theme"),
+        ("c", "cycle_category", "Category"),
+        ("ctrl+p", "focus_search", "Search"),
+        ("ctrl+r", "sync_telegram", "Sync"),
+        ("escape", "clear_search", "Back"),
+        ("right", "next_page", "→ Page"),
+        ("left", "prev_page", "← Page"),
         ("q", "quit", "Quit"),
     ]
 
@@ -150,12 +143,6 @@ class MainScreen(SelectionMixin, Screen):
         if self.page < mp: self.page += 1; await self.reload_table()
     async def action_prev_page(self) -> None:
         if self.page > 1: self.page -= 1; await self.reload_table()
-    async def action_toggle_pause_queue(self) -> None:
-        await (self.downloader.resume_queue() if self.downloader.is_paused else self.downloader.pause_queue()); await self.reload_table()
-    async def action_cancel_queue(self) -> None:
-        await self.downloader.cancel_queue(); await self.reload_table()
-    async def action_retry_failed(self) -> None:
-        await self.downloader.retry_failed(); await self.reload_table()
 
     async def action_clear_search(self) -> None:
         self.query_one("#search-bar", Input).value = ""
