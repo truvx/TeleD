@@ -50,10 +50,9 @@ class DownloadProgressRow(Widget):
     DEFAULT_CSS = """
     DownloadProgressRow {
         background: $panel;
-        border: round $primary;
+        border-bottom: solid $primary-muted;
         padding: 0 1;
-        margin-bottom: 1;
-        height: 5;
+        height: 4;
     }
     .fn-label {
         color: $text;
