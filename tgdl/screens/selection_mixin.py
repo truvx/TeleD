@@ -12,11 +12,10 @@ class SelectionMixin:
     """Mixin providing file selection, download queue, and counter logic for MainScreen."""
 
     def _get_active_table(self) -> DataTable:
-        from textual.widgets import TabbedContent
         try:
-            tabs = self.query_one("#right-tabs", TabbedContent)
-            if tabs.active == "downloaded-table-pane":
-                return self.query_one("#downloaded-table", DataTable)
+            table_dl = self.query_one("#downloaded-table", DataTable)
+            if table_dl.has_focus:
+                return table_dl
         except Exception:
             pass
         return self.query_one("#files-table", DataTable)

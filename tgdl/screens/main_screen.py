@@ -250,56 +250,63 @@ class MainScreen(SelectionMixin, Screen):
     async def reload_table(self) -> None:
         try:
             search_bar = self.query_one("#search-bar", Input)
-            query = search_bar.value.strip() or None
+            query = search_bar.value.strip()
         except Exception:
             search_bar, query = None, None
 
-        try:
-            tabs = self.query_one("#right-tabs", TabbedContent)
-            is_downloaded_tab = (tabs.active == "downloaded-table-pane")
-        except Exception:
-            is_downloaded_tab = False
-
         cat = self.categories[self.current_category_idx]
-        self.total_count, total_bytes = await db.get_filtered_totals(search_query=query, category_filter=cat, downloaded_only=is_downloaded_tab)
+        self.total_count, total_bytes = await db.get_filtered_totals(search_query=query, category_filter=cat, downloaded_only=False)
         max_pages = max(1, (self.total_count + self.page_size - 1) // self.page_size)
         if self.page > max_pages: self.page = max_pages
 
         offset = (self.page - 1) * self.page_size
         messages = await self.browser.load_messages(
             search_query=query, sort_by=self.sort_by, sort_desc=self.sort_desc,
-            category_filter=cat, downloaded_only=is_downloaded_tab, limit=self.page_size, offset=offset
+            category_filter=cat, downloaded_only=False, limit=self.page_size, offset=offset
         )
-        table = self._get_active_table()
+        table = self.query_one("#files-table", DataTable)
         table.clear()
 
         cat_label = f"[{cat.upper()}] " if cat else ""
         paused_str = " (PAUSED)" if self.downloader.is_paused else ""
         if search_bar:
             search_bar.placeholder = f"🔍 {cat_label}Search (Page {self.page}/{max_pages}, {self.total_count} items, {format_bytes(total_bytes)}){paused_str}…"
+        try: self.query_one(Header).title = f"{cat_label}Search (Page {self.page}/{max_pages}, {self.total_count} items)"
+        except Exception: pass
 
-        st_map = {"completed": "[green]Done[/]", "failed": "[red]Failed[/]",
-                  "downloading": "[yellow]DL…[/]", "paused": "[yellow]Paused[/]", "cancelled": "[dim]Cancelled[/]"}
         self._dl_count = 0
         for msg in messages:
             if msg.download_status == "completed": self._dl_count += 1
+            table.add_row(
+                "✔" if msg.message_id in self.selected_ids else " ",
+                highlight_text(msg.filename, query) if query else msg.filename,
+                format_bytes(msg.file_size),
+                get_colored_file_badge(msg.filename, msg.mime_type, msg.extension),
+                msg.upload_date[:10] if msg.upload_date else "",
+                key=str(msg.message_id)
+            )
+
+        try:
+            tabs = self.query_one("#right-tabs", TabbedContent)
+            is_downloaded_tab = (tabs.active == "downloaded-table-pane")
+        except Exception:
+            is_downloaded_tab = False
             
-            if is_downloaded_tab:
-                table.add_row(
+        if is_downloaded_tab:
+            table_dl = self.query_one("#downloaded-table", DataTable)
+            table_dl.clear()
+            dl_msgs = await self.browser.load_messages(
+                search_query=query, sort_by=self.sort_by, sort_desc=self.sort_desc,
+                category_filter=cat, downloaded_only=True, limit=self.page_size, offset=0
+            )
+            for msg in dl_msgs:
+                table_dl.add_row(
                     "✔" if msg.message_id in self.selected_ids else " ",
                     highlight_text(msg.filename, query) if query else msg.filename,
                     format_bytes(msg.file_size),
                     key=str(msg.message_id)
                 )
-            else:
-                table.add_row(
-                    "✔" if msg.message_id in self.selected_ids else " ",
-                    highlight_text(msg.filename, query) if query else msg.filename,
-                    format_bytes(msg.file_size),
-                    get_colored_file_badge(msg.filename, msg.mime_type, msg.extension),
-                    msg.upload_date[:10] if msg.upload_date else "",
-                    key=str(msg.message_id)
-                )
+
         try: self.query_one("#stat-speed", StatCard).update_value(format_bytes(total_bytes))
         except Exception: pass
         await self._update_counters()
