@@ -295,19 +295,15 @@ class Downloader:
                     pass
 
     async def _ensure_connected(self) -> None:
-        """Ensure the Telegram client is connected before downloading."""
+        """Ensure the Telegram client is connected. Only reconnects if truly disconnected."""
         try:
             if not self.client_wrapper.client or not self.client_wrapper.client.is_connected():
+                # Client is disconnected — reconnect with timeout
                 await asyncio.wait_for(self.client_wrapper.connect(), timeout=30)
-            else:
-                # Do a quick health check — try to ping
-                is_auth = await asyncio.wait_for(
-                    self.client_wrapper.client.is_user_authorized(), timeout=10
-                )
-                if not is_auth:
-                    raise RuntimeError("Telegram session is not authorized.")
+            # If is_connected() returns True, trust it — don't make extra API calls
+            # that could time out and cause false failures
         except asyncio.TimeoutError:
-            raise ConnectionError("Telegram connection timed out. Check your network.")
+            raise ConnectionError("Telegram reconnection timed out. Check your network.")
 
     async def _download_file(self, job: DownloadJob) -> None:
         # Ensure client connection with timeout

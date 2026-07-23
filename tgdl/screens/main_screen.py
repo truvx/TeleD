@@ -95,8 +95,15 @@ class MainScreen(SelectionMixin, Screen):
             table.add_column(title, key=key)
 
         def handle_fail(mid: int, reason: str) -> None:
-            var = "warning" if "Session" in reason or "Flood" in reason else "error"
-            self.app.push_screen(ErrorModal("Download Failure", f"#{mid}: {reason}", variant=var))
+            # Use a notification toast instead of a blocking modal
+            # Downloads can fail transiently (network hiccups, retries) and we
+            # don't want to force the user to dismiss a modal for every failure.
+            try:
+                severity = "warning" if any(k in reason for k in ("Session", "Flood", "Auth", "authorized")) else "error"
+                short_reason = reason[:80] + "…" if len(reason) > 80 else reason
+                self.notify(f"⚠ #{mid}: {short_reason}", severity=severity, timeout=6)
+            except Exception:
+                pass
 
         self.downloader.on_failed.append(handle_fail)
         self.downloader.start()
