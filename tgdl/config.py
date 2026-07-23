@@ -23,7 +23,7 @@ API_HASH: Optional[str] = os.environ.get("TELEGRAM_API_HASH")
 
 SESSION_PATH: str = os.environ.get("TELEGRAM_SESSION_PATH", str(TGDL_DIR / "session" / "tgdl.session"))
 DATABASE_PATH: str = os.environ.get("DATABASE_PATH", str(TGDL_DIR / "cache" / "tgdl.db"))
-DOWNLOAD_DIR: str = os.environ.get("DOWNLOAD_DIR", str(TGDL_DIR / "downloads"))
+DOWNLOAD_DIR: str = os.environ.get("DOWNLOAD_DIR", str(Path.home() / "Downloads" / "Telegram"))
 CONCURRENT_DOWNLOADS: int = int(os.environ.get("CONCURRENT_DOWNLOADS", "2"))
 
 PROXY_HOST: Optional[str] = os.environ.get("TELEGRAM_PROXY_HOST")
@@ -52,7 +52,7 @@ def reload_config() -> None:
     API_HASH = os.environ.get("TELEGRAM_API_HASH")
     SESSION_PATH = os.environ.get("TELEGRAM_SESSION_PATH", str(TGDL_DIR / "session" / "tgdl.session"))
     DATABASE_PATH = os.environ.get("DATABASE_PATH", str(TGDL_DIR / "cache" / "tgdl.db"))
-    DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", str(TGDL_DIR / "downloads"))
+    DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", str(Path.home() / "Downloads" / "Telegram"))
     CONCURRENT_DOWNLOADS = int(os.environ.get("CONCURRENT_DOWNLOADS", "2"))
     PROXY_HOST = os.environ.get("TELEGRAM_PROXY_HOST")
     PROXY_PORT = int(os.environ.get("TELEGRAM_PROXY_PORT", "0")) if os.environ.get("TELEGRAM_PROXY_PORT", "").isdigit() else None
