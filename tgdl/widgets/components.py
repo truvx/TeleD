@@ -45,30 +45,36 @@ class StatCard(Widget):
             pass
 
 class DownloadProgressRow(Widget):
-    """Detailed live download progress card with Rich styling."""
+    """Compact, sleek live download progress card."""
 
     DEFAULT_CSS = """
     DownloadProgressRow {
         background: $panel;
         border: round $primary;
-        padding: 1;
+        padding: 0 1;
         margin-bottom: 1;
-        height: auto;
+        height: 5;
     }
     .fn-label {
         color: $text;
         text-style: bold;
+        width: 70%;
     }
     .status-label {
         color: $accent;
         text-style: bold;
+        width: 30%;
+        text-align: right;
     }
     .metrics-label {
         color: $text-muted;
+        width: 50%;
     }
     .speed-label {
         color: $success;
         text-style: bold;
+        width: 50%;
+        text-align: right;
     }
     """
 
@@ -80,8 +86,8 @@ class DownloadProgressRow(Widget):
         with Vertical():
             with Horizontal():
                 yield Label(f"📄 {self.job.filename}", classes="fn-label")
-                yield Label(f" [{self.job.status.upper()}]", classes="status-label")
-            yield ProgressBar(total=100, show_percentage=True, id=f"pb-{self.job.message_id}")
+                yield Label(f"[{self.job.status.upper()}]", classes="status-label")
+            yield ProgressBar(total=100, show_percentage=False, id=f"pb-{self.job.message_id}")
             with Horizontal():
                 yield Label(self._format_bytes_info(), classes="metrics-label", id=f"mb-{self.job.message_id}")
                 yield Label(self._format_speed_info(), classes="speed-label", id=f"sb-{self.job.message_id}")
@@ -113,12 +119,12 @@ class DownloadProgressRow(Widget):
         elif self.job.status == "paused":
             return "⏸ Paused"
         elif self.job.status == "queued":
-            return "⏳ Queued in line..."
+            return "⏳ Queued"
             
         cur_spd = format_speed(self.job.speed)
         avg_spd = format_speed(self.job.avg_speed)
         eta_str = format_eta(self.job.eta)
-        return f"⚡ {cur_spd} (Avg: {avg_spd}) | ETA: {eta_str}"
+        return f"⚡ {cur_spd} | ETA: {eta_str}"
 
 class CounterBar(Static):
     """Bottom status counter displaying selection, overall queue progress, and download metrics."""

@@ -49,10 +49,8 @@ class Downloader:
     async def restore_queue_from_db(self) -> None:
         try:
             with sqlite3.connect(config.DATABASE_PATH, timeout=30.0) as conn:
-                conn.row_factory = sqlite3.Row
-                rows = conn.execute("SELECT DISTINCT message_id FROM downloads WHERE status IN ('downloading', 'queued', 'paused')").fetchall()
-                for r in rows:
-                    await self.add_to_queue(r["message_id"])
+                conn.execute("DELETE FROM downloads WHERE status IN ('queued', 'downloading')")
+                conn.commit()
         except Exception:
             pass
 
