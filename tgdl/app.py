@@ -1,3 +1,4 @@
+import os
 import asyncio
 import sys
 from typing import Optional
@@ -59,7 +60,7 @@ def prompt_credentials() -> None:
 
 
 async def run_login_if_needed() -> None:
-    """Only run interactive terminal login if user is not authorized."""
+    """Only run interactive terminal login if session file does not exist."""
     client = TelegramClientWrapper()
     try:
         is_auth = await client.connect()
@@ -72,7 +73,7 @@ async def run_login_if_needed() -> None:
     finally:
         try:
             await client.disconnect()
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.2)
         except Exception:
             pass
 
@@ -84,7 +85,9 @@ def main() -> None:
             print("Invalid configuration. Exiting.")
             sys.exit(1)
 
-    asyncio.run(run_login_if_needed())
+    if not os.path.exists(config.SESSION_PATH):
+        asyncio.run(run_login_if_needed())
+
     TeleDApp().run()
 
 
