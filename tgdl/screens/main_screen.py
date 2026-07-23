@@ -2,7 +2,7 @@ import asyncio
 from typing import Dict, Set, Optional
 from textual.app import ComposeResult
 from textual.screen import Screen
-from textual.widgets import Header, Footer, DataTable, Input, LoadingIndicator
+from textual.widgets import Header, Footer, DataTable, Input, LoadingIndicator, ProgressBar
 from textual.containers import Horizontal, Vertical, VerticalScroll
 
 from tgdl.browser import Browser
@@ -50,6 +50,7 @@ class MainScreen(SelectionMixin, Screen):
     #right-pane { width: 36%; height: 100%; border: round $primary; padding: 0 1; layout: vertical; }
     #right-pane:focus-within { border: round $accent; }
     #search-bar { margin: 0 0 1 0; height: 3; }
+    #sync-progress-bar { height: 1; margin-bottom: 1; display: none; }
     #sync-spinner { height: 1; margin-bottom: 1; display: none; }
     #files-table { height: 1fr; }
     #stats-row { layout: horizontal; height: 4; margin-bottom: 1; }
@@ -73,6 +74,7 @@ class MainScreen(SelectionMixin, Screen):
         with Horizontal(id="main-container"):
             with Vertical(id="left-pane"):
                 yield Input(placeholder="🔍 Search... (Ctrl+R to sync, Ctrl+P to focus)", id="search-bar")
+                yield ProgressBar(total=100, show_percentage=True, id="sync-progress-bar")
                 yield LoadingIndicator(id="sync-spinner")
                 yield DataTable(id="files-table")
             with Vertical(id="right-pane"):
@@ -146,8 +148,7 @@ class MainScreen(SelectionMixin, Screen):
     async def action_prev_page(self) -> None:
         if self.page > 1: self.page -= 1; await self.reload_table()
     async def action_toggle_pause_queue(self) -> None:
-        await (self.downloader.resume_queue() if self.downloader.is_paused else self.downloader.pause_queue())
-        await self.reload_table()
+        await (self.downloader.resume_queue() if self.downloader.is_paused else self.downloader.pause_queue()); await self.reload_table()
     async def action_cancel_queue(self) -> None:
         await self.downloader.cancel_queue(); await self.reload_table()
     async def action_retry_failed(self) -> None:
@@ -161,19 +162,26 @@ class MainScreen(SelectionMixin, Screen):
         await self.reload_table()
 
     async def _do_sync(self, auto: bool = False) -> None:
-        spinner = self.query_one("#sync-spinner", LoadingIndicator)
-        spinner.display = True
+        pbar = self.query_one("#sync-progress-bar", ProgressBar)
+        pbar.display = True
+        pbar.progress = 0
         prev = self.sub_title or ""
         self.sub_title = prev + " — Syncing…"
+
+        def on_sync_progress(scanned: int, total: int, found_media: int) -> None:
+            if total > 0:
+                pbar.update(total=total, progress=scanned)
+            self.sub_title = f"Syncing {scanned}/{total} messages ({found_media} media items found)..."
+
         try:
-            n = await self.browser.sync_messages()
+            n = await self.browser.sync_messages(progress_callback=on_sync_progress)
             self.sub_title = prev
             await self.reload_table()
         except Exception as e:
             self.sub_title = prev
             self.app.push_screen(ErrorModal("Sync Notice", str(e), variant="warning"))
         finally:
-            spinner.display = False
+            pbar.display = False
 
     async def action_sync_telegram(self) -> None:
         await self._do_sync(); await self.reload_table()

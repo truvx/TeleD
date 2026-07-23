@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Callable
 from tgdl.telegram_client import TelegramClientWrapper
 import tgdl.database as db
 from tgdl.models import MessageMetadata
@@ -7,10 +7,10 @@ class Browser:
     def __init__(self, client_wrapper: TelegramClientWrapper) -> None:
         self.client_wrapper = client_wrapper
 
-    async def sync_messages(self) -> int:
+    async def sync_messages(self, progress_callback: Optional[Callable[[int, int, int], None]] = None) -> int:
         """Fetch and cache new messages from Saved Messages incrementally."""
         max_id = await db.get_max_message_id()
-        new_messages = await self.client_wrapper.fetch_media_messages(min_id=max_id)
+        new_messages = await self.client_wrapper.fetch_media_messages(min_id=max_id, progress_callback=progress_callback)
         if new_messages:
             await db.cache_messages(new_messages)
         return len(new_messages)
