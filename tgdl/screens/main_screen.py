@@ -114,7 +114,8 @@ class MainScreen(SelectionMixin, Screen):
         await self.reload_table()
 
         try:
-            await self.browser.client_wrapper.connect()
+            if not self.browser.client_wrapper.client or not self.browser.client_wrapper.client.is_connected():
+                await self.browser.client_wrapper.connect()
             me = await self.browser.client_wrapper.get_me()
             if me:
                 uname = me.get("username") or f"User_{me.get('id', 0)}"
@@ -159,7 +160,7 @@ class MainScreen(SelectionMixin, Screen):
         pbar.display = True
         pbar.progress = 0
         prev = self.sub_title or ""
-        self.set_subtitle(prev + " — Syncing…")
+        self.set_subtitle("Syncing with Telegram…")
         last_update = [0.0]
 
         async def on_sync_progress(scanned: int, total: int, found_media: int) -> None:
@@ -173,10 +174,13 @@ class MainScreen(SelectionMixin, Screen):
 
         try:
             n = await self.browser.sync_messages(progress_callback=on_sync_progress)
-            self.set_subtitle(prev)
+            me = await self.browser.client_wrapper.get_me()
+            uname = me.get("username") if me else None
+            self.set_subtitle(f"Connected as: @{uname}" if uname else "Connected")
             await self.reload_table()
+            self.notify(f"Synced {n} new files!", timeout=3)
         except Exception as e:
-            self.set_subtitle(prev)
+            self.set_subtitle("Connected")
             self.app.push_screen(ErrorModal("Sync Notice", str(e), variant="warning"))
         finally:
             pbar.display = False
