@@ -158,7 +158,6 @@ class MainScreen(SelectionMixin, Screen):
         pbar = self.query_one("#sync-progress-bar", ProgressBar)
         pbar.display = True
         pbar.progress = 0
-        prev = self.sub_title or ""
         self.set_subtitle("Syncing with Telegram…")
         last_update = [0.0]
 
@@ -168,19 +167,35 @@ class MainScreen(SelectionMixin, Screen):
                 last_update[0] = now
                 if total > 0:
                     pbar.update(total=total, progress=scanned)
-                st = f"Syncing {scanned}/{total} messages ({found_media} media items found)..."
-                self.set_subtitle(st)
+                self.set_subtitle(f"Syncing {scanned}/{total} messages ({found_media} media found)...")
 
         try:
+            # Ensure client is connected and authorized before syncing
+            is_auth = await self.browser.client_wrapper.connect()
+            if not is_auth:
+                self.set_subtitle("Offline — press Ctrl+R to sync when connected")
+                if not auto:
+                    self.app.push_screen(ErrorModal(
+                        "Not Authorized",
+                        "Telegram session is not authorized.\nRun `teled` in a terminal to re-login.",
+                        variant="warning",
+                    ))
+                return
+
             n = await self.browser.sync_messages(progress_callback=on_sync_progress)
             me = await self.browser.client_wrapper.get_me()
             uname = me.get("username") if me else None
             self.set_subtitle(f"Connected as: @{uname}" if uname else "Connected")
             await self.reload_table()
-            self.notify(f"Synced {n} new files!", timeout=3)
+            self.notify(f"✅ Synced {n} new files!", timeout=3)
         except Exception as e:
-            self.set_subtitle("Connected")
-            self.app.push_screen(ErrorModal("Sync Notice", str(e), variant="warning"))
+            err_msg = str(e)
+            if auto:
+                # Silent failure on auto-sync at startup
+                self.set_subtitle("Offline — press Ctrl+R to sync when ready")
+            else:
+                self.set_subtitle("Sync failed — check connection")
+                self.app.push_screen(ErrorModal("Sync Failed", err_msg, variant="warning"))
         finally:
             pbar.display = False
 
@@ -247,9 +262,12 @@ class MainScreen(SelectionMixin, Screen):
 
     async def update_stats_and_jobs(self) -> None:
         active_jobs = self.downloader.active_jobs
-        try: downloads_list = self.query_one("#downloads-list", VerticalScroll)
-        except Exception: return
+        try:
+            downloads_list = self.query_one("#downloads-list", VerticalScroll)
+        except Exception:
+            return
 
+        # Mount new job cards and update existing ones
         for msg_id, job in list(active_jobs.items()):
             if msg_id not in self.progress_widgets:
                 widget = DownloadProgressRow(job)
@@ -258,14 +276,19 @@ class MainScreen(SelectionMixin, Screen):
             else:
                 self.progress_widgets[msg_id].update_job(job)
 
-        for msg_id, widget in list(self.progress_widgets.items()):
-            if msg_id not in active_jobs:
-                async def _rm(mid: int, w: DownloadProgressRow) -> None:
-                    await asyncio.sleep(3)
-                    try: w.remove(); self.progress_widgets.pop(mid, None)
-                    except Exception: pass
-                asyncio.create_task(_rm(msg_id, widget))
+        # Remove cards for jobs that are no longer active
+        # Use default args to avoid closure-capture bug
+        stale_ids = [mid for mid in self.progress_widgets if mid not in active_jobs]
+        for msg_id in stale_ids:
+            widget = self.progress_widgets.pop(msg_id, None)
+            if widget:
+                try:
+                    widget.remove()
+                except Exception:
+                    pass
 
-        try: self.query_one("#stat-active", StatCard).update_value(str(len(active_jobs)))
-        except Exception: pass
+        try:
+            self.query_one("#stat-active", StatCard).update_value(str(len(active_jobs)))
+        except Exception:
+            pass
         await self._update_counters()

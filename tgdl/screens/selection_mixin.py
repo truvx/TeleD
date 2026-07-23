@@ -33,6 +33,7 @@ class SelectionMixin:
             asyncio.create_task(self._update_counters())
 
     async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Fires when user presses Enter on a DataTable row."""
         await self.action_download_selected()
 
     async def action_toggle_select_all(self) -> None:
@@ -59,27 +60,64 @@ class SelectionMixin:
         await self._update_counters()
 
     async def action_download_selected(self) -> None:
+        """Queue selected file(s) for download; if none selected, queue file under cursor."""
         table = self.query_one("#files-table", DataTable)
         target_ids = set(self.selected_ids)
+
         if not target_ids:
             row_key = self._get_cursor_row_key(table)
             if row_key is not None:
                 target_ids.add(int(row_key.value))
+
         if not target_ids:
             return
+
+        added = 0
+        skipped = 0
         for msg_id in target_ids:
-            await self.downloader.add_to_queue(msg_id)
+            result = await self.downloader.add_to_queue(msg_id)
+            if result:
+                added += 1
+            else:
+                skipped += 1
+
         self.selected_ids.clear()
-        try: self.notify(f"🚀 Queued {len(target_ids)} file(s) for download!", timeout=3)
-        except Exception: pass
+
+        if added > 0:
+            skip_note = f" ({skipped} already queued)" if skipped > 0 else ""
+            try:
+                self.notify(f"🚀 Queued {added} file(s) for download!{skip_note}", timeout=3)
+            except Exception:
+                pass
+        elif skipped > 0:
+            try:
+                self.notify(f"⚠️ File(s) already in queue.", timeout=2)
+            except Exception:
+                pass
+
         await self.reload_table()
 
     async def action_toggle_pause_queue(self) -> None:
-        await (self.downloader.resume_queue() if self.downloader.is_paused else self.downloader.pause_queue())
+        if self.downloader.is_paused:
+            await self.downloader.resume_queue()
+            try:
+                self.notify("▶ Queue resumed.", timeout=2)
+            except Exception:
+                pass
+        else:
+            await self.downloader.pause_queue()
+            try:
+                self.notify("⏸ Queue paused.", timeout=2)
+            except Exception:
+                pass
         await self.reload_table()
 
     async def action_cancel_queue(self) -> None:
         await self.downloader.cancel_queue()
+        try:
+            self.notify("✖ Queue cancelled.", timeout=2)
+        except Exception:
+            pass
         await self.reload_table()
 
     async def action_retry_failed(self) -> None:
@@ -87,18 +125,22 @@ class SelectionMixin:
         await self.reload_table()
 
     async def _update_counters(self) -> None:
-        q_cnt = len(self.downloader.active_jobs)
+        active_jobs = self.downloader.active_jobs
+        q_cnt = len(active_jobs)
         sel_bytes = sum(
-            j.file_size for j in self.downloader.active_jobs.values()
+            j.file_size for j in active_jobs.values()
             if j.message_id in self.selected_ids
         )
-        q_dl = sum(j.downloaded_bytes for j in self.downloader.active_jobs.values())
-        q_tot = sum(j.file_size for j in self.downloader.active_jobs.values())
+        q_dl = sum(j.downloaded_bytes for j in active_jobs.values())
+        q_tot = sum(j.file_size for j in active_jobs.values())
         try:
             self.query_one("#counter-bar", CounterBar).update_counts(
-                selected=len(self.selected_ids), selected_bytes=sel_bytes,
-                downloaded=self._dl_count, queue=q_cnt,
-                queue_downloaded=q_dl, queue_total=q_tot
+                selected=len(self.selected_ids),
+                selected_bytes=sel_bytes,
+                downloaded=self._dl_count,
+                queue=q_cnt,
+                queue_downloaded=q_dl,
+                queue_total=q_tot,
             )
         except Exception:
             pass
