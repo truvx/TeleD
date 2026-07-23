@@ -149,7 +149,10 @@ class MainScreen(SelectionMixin, Screen):
             await self._do_sync(auto=True)
         self.set_interval(1.0, self._update_counters)
         self.set_interval(3.0, self._check_deleted_files)
+        self.set_interval(15.0, self._auto_sync_telegram)
         
+    async def _auto_sync_telegram(self) -> None:
+        asyncio.create_task(self._do_sync(auto=True))
     async def _check_deleted_files(self) -> None:
         changed = await db.sync_missing_files()
         if changed:
