@@ -32,15 +32,18 @@ class TelegramClientWrapper:
         proxy = config.get_proxy()
         try:
             if not self.client:
+                kwargs = {
+                    "connection_retries": 5,
+                    "retry_delay": 1,
+                    "timeout": 10
+                }
+                if proxy:
+                    kwargs["proxy"] = proxy
                 self.client = TelegramClient(
                     session_path,
                     config.API_ID,
                     config.API_HASH,
-                    connection=ConnectionTcpObfuscated,
-                    proxy=proxy,
-                    connection_retries=3,
-                    retry_delay=1,
-                    timeout=5
+                    **kwargs
                 )
             if not self.client.is_connected():
                 await self.client.connect()

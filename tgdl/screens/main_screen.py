@@ -166,12 +166,12 @@ class MainScreen(SelectionMixin, Screen):
         prev = self.sub_title or ""
         self.sub_title = prev + " — Syncing…"
         try:
-            await self.browser.sync_messages()
+            n = await self.browser.sync_messages()
             self.sub_title = prev
-            if not auto: await self.reload_table()
+            await self.reload_table()
         except Exception as e:
             self.sub_title = prev
-            if not auto: self.app.push_screen(ErrorModal("Sync Failure", str(e), variant="error"))
+            self.app.push_screen(ErrorModal("Sync Notice", str(e), variant="warning"))
         finally:
             spinner.display = False
 
