@@ -24,33 +24,54 @@ class Downloader:
     def __init__(self, client_wrapper: TelegramClientWrapper, concurrency: Optional[int] = None) -> None:
         self.client_wrapper = client_wrapper
         self.concurrency = concurrency or config.CONCURRENT_DOWNLOADS
-        self.queue: asyncio.Queue[int] = asyncio.Queue()
+        # Use a list-based queue so we don't need asyncio primitives that may have loop issues
+        self._queue: List[int] = []
         self.active_jobs: Dict[int, DownloadJob] = {}
         self.workers: List[asyncio.Task] = []
         self._running = False
         self.is_paused = False
+        self._queue_event: Optional[asyncio.Event] = None
 
         self.on_progress: List[Callable[[DownloadJob], None]] = []
         self.on_completed: List[Callable[[int, str], None]] = []
         self.on_failed: List[Callable[[int, str], Optional[str]]] = []
+
+    def _get_or_create_event(self) -> asyncio.Event:
+        """Get or create the queue event, ensuring it's tied to the running loop."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.Event()
+        if self._queue_event is None or getattr(self._queue_event, '_loop', None) != loop:
+            self._queue_event = asyncio.Event()
+        return self._queue_event
 
     def start(self) -> None:
         if self._running:
             return
         self._running = True
         os.makedirs(config.DOWNLOAD_DIR, exist_ok=True)
-        self.workers = [asyncio.create_task(self._worker()) for _ in range(self.concurrency)]
+        # Create the event in the current loop
+        self._queue_event = asyncio.Event()
+        self.workers = [asyncio.ensure_future(self._worker()) for _ in range(self.concurrency)]
 
     async def stop(self) -> None:
         self._running = False
+        # Wake up all workers so they can exit
+        if self._queue_event:
+            self._queue_event.set()
         for worker in self.workers:
             worker.cancel()
         if self.workers:
             await asyncio.gather(*self.workers, return_exceptions=True)
         self.workers = []
         for msg_id, job in list(self.active_jobs.items()):
-            await db.update_download_status(msg_id, "pending", job.downloaded_bytes)
+            try:
+                await db.update_download_status(msg_id, "pending", job.downloaded_bytes)
+            except Exception:
+                pass
         self.active_jobs.clear()
+        self._queue.clear()
 
     async def add_to_queue(self, message_id: int) -> bool:
         """Add a file to the download queue. Returns True if added, False if already queued/downloading."""
@@ -70,10 +91,17 @@ class Downloader:
             status=status,
         )
         self.active_jobs[message_id] = job
-        await db.update_download_status(message_id, status, 0)
+        try:
+            await db.update_download_status(message_id, status, 0)
+        except Exception:
+            pass
 
         if not self.is_paused:
-            await self.queue.put(message_id)
+            self._queue.append(message_id)
+            # Signal workers that there's work to do
+            if self._queue_event:
+                self._queue_event.set()
+
         return True
 
     async def pause_queue(self) -> None:
@@ -81,28 +109,31 @@ class Downloader:
         for msg_id, job in list(self.active_jobs.items()):
             if job.status not in ("downloading", "completed", "failed"):
                 job.status = "paused"
-                await db.update_download_status(msg_id, "paused", job.downloaded_bytes)
+                try:
+                    await db.update_download_status(msg_id, "paused", job.downloaded_bytes)
+                except Exception:
+                    pass
 
     async def resume_queue(self) -> None:
         self.is_paused = False
         for msg_id, job in list(self.active_jobs.items()):
             if job.status == "paused":
                 job.status = "queued"
-                await db.update_download_status(msg_id, "pending", job.downloaded_bytes)
-                await self.queue.put(msg_id)
+                self._queue.append(msg_id)
+                try:
+                    await db.update_download_status(msg_id, "pending", job.downloaded_bytes)
+                except Exception:
+                    pass
+        if self._queue_event:
+            self._queue_event.set()
 
     async def cancel_queue(self) -> None:
-        # Drain the async queue
-        while not self.queue.empty():
-            try:
-                self.queue.get_nowait()
-                self.queue.task_done()
-            except Exception:
-                break
-
-        # Cancel all active jobs
+        self._queue.clear()
         for msg_id in list(self.active_jobs.keys()):
-            await db.update_download_status(msg_id, "cancelled", 0)
+            try:
+                await db.update_download_status(msg_id, "cancelled", 0)
+            except Exception:
+                pass
         self.active_jobs.clear()
 
     async def retry_failed(self) -> None:
@@ -112,96 +143,129 @@ class Downloader:
                 await self.add_to_queue(msg.message_id)
 
     async def _worker(self) -> None:
+        """Download worker task. Runs continuously, picking jobs from the queue."""
         while self._running:
             try:
-                if self.is_paused:
-                    await asyncio.sleep(0.3)
+                # Pop next job from list queue
+                msg_id = None
+                if self._queue:
+                    msg_id = self._queue.pop(0)
+
+                if msg_id is None:
+                    # No work — wait for signal (with timeout to avoid blocking forever)
+                    if self._queue_event:
+                        try:
+                            self._queue_event.clear()
+                            await asyncio.wait_for(self._queue_event.wait(), timeout=1.0)
+                        except asyncio.TimeoutError:
+                            pass
+                    else:
+                        await asyncio.sleep(0.5)
                     continue
 
-                try:
-                    msg_id = await asyncio.wait_for(self.queue.get(), timeout=0.5)
-                except asyncio.TimeoutError:
+                if self.is_paused:
+                    # Put it back and wait
+                    self._queue.insert(0, msg_id)
+                    await asyncio.sleep(0.3)
                     continue
 
                 job = self.active_jobs.get(msg_id)
                 if not job:
-                    # Job was cancelled before worker picked it up
-                    try:
-                        self.queue.task_done()
-                    except Exception:
-                        pass
+                    # Job was cancelled before we picked it up
                     continue
 
-                # Skip if paused while waiting
-                if self.is_paused:
-                    job.status = "paused"
-                    try:
-                        self.queue.task_done()
-                    except Exception:
-                        pass
+                if job.status == "paused":
+                    # Don't process paused jobs
                     continue
 
                 job.status = "downloading"
                 success = False
+
                 while job.retries <= job.max_retries and not success and not self.is_paused:
                     try:
                         await self._download_file(job)
                         success = True
                     except asyncio.CancelledError:
-                        await db.update_download_status(msg_id, "cancelled", job.downloaded_bytes)
+                        try:
+                            await db.update_download_status(msg_id, "cancelled", job.downloaded_bytes)
+                        except Exception:
+                            pass
                         raise
                     except FloodWaitError as e:
                         job.status = f"flood wait ({e.seconds}s)"
-                        await db.update_download_status(msg_id, "pending", job.downloaded_bytes)
+                        try:
+                            await db.update_download_status(msg_id, "pending", job.downloaded_bytes)
+                        except Exception:
+                            pass
                         await asyncio.sleep(e.seconds + 1)
                     except PermissionError:
                         job.status = "failed"
                         job.error_msg = "Permission Denied: Cannot write to download folder."
-                        await db.update_download_status(msg_id, "failed", job.downloaded_bytes)
+                        try:
+                            await db.update_download_status(msg_id, "failed", job.downloaded_bytes)
+                        except Exception:
+                            pass
                         for cb in self.on_failed:
-                            cb(msg_id, job.error_msg)
+                            try:
+                                cb(msg_id, job.error_msg)
+                            except Exception:
+                                pass
                         break
                     except OSError as e:
                         if getattr(e, "errno", 0) == 28 or "No space left" in str(e):
                             job.status = "failed"
                             job.error_msg = "Disk Full: No space left on target disk."
-                            await db.update_download_status(msg_id, "failed", job.downloaded_bytes)
+                            try:
+                                await db.update_download_status(msg_id, "failed", job.downloaded_bytes)
+                            except Exception:
+                                pass
                             for cb in self.on_failed:
-                                cb(msg_id, job.error_msg)
+                                try:
+                                    cb(msg_id, job.error_msg)
+                                except Exception:
+                                    pass
                             break
                         else:
                             await self._handle_transient_error(job, str(e))
                     except (AuthKeyUnregisteredError, SessionRevokedError, UserDeactivatedError, AuthKeyInvalidError):
                         job.status = "failed"
                         job.error_msg = "Session Expired: Please re-authorize your session."
-                        await db.update_download_status(msg_id, "failed", job.downloaded_bytes)
+                        try:
+                            await db.update_download_status(msg_id, "failed", job.downloaded_bytes)
+                        except Exception:
+                            pass
                         for cb in self.on_failed:
-                            cb(msg_id, job.error_msg)
+                            try:
+                                cb(msg_id, job.error_msg)
+                            except Exception:
+                                pass
                         break
                     except (asyncio.TimeoutError, socket.error, ConnectionError) as e:
                         await self._handle_transient_error(job, f"Network Error: {e}")
                     except ValueError as e:
                         if "File size mismatch" in str(e) or "corrupted" in str(e).lower():
-                            await self._handle_transient_error(job, f"Corrupted Download: {e}")
+                            await self._handle_transient_error(job, f"Corrupted: {e}")
                         else:
                             job.status = "failed"
                             job.error_msg = str(e)
-                            await db.update_download_status(msg_id, "failed", job.downloaded_bytes)
+                            try:
+                                await db.update_download_status(msg_id, "failed", job.downloaded_bytes)
+                            except Exception:
+                                pass
                             for cb in self.on_failed:
-                                cb(msg_id, str(e))
+                                try:
+                                    cb(msg_id, str(e))
+                                except Exception:
+                                    pass
                             break
                     except Exception as e:
                         await self._handle_transient_error(job, str(e))
 
-                # Grace period — keep card visible for 3s after completion/failure
+                # Grace period — keep the card visible for 3s after completion/failure
                 if job.status in ("completed", "failed"):
                     await asyncio.sleep(3)
 
                 self.active_jobs.pop(msg_id, None)
-                try:
-                    self.queue.task_done()
-                except Exception:
-                    pass
 
             except asyncio.CancelledError:
                 break
@@ -212,24 +276,53 @@ class Downloader:
         job.retries += 1
         if job.retries <= job.max_retries:
             job.status = f"retry {job.retries}/{job.max_retries}"
-            await db.update_download_status(job.message_id, "pending", job.downloaded_bytes)
+            try:
+                await db.update_download_status(job.message_id, "pending", job.downloaded_bytes)
+            except Exception:
+                pass
             await asyncio.sleep(min(2 ** job.retries, 30))
         else:
             job.status = "failed"
             job.error_msg = err_text
-            await db.update_download_status(job.message_id, "failed", job.downloaded_bytes)
+            try:
+                await db.update_download_status(job.message_id, "failed", job.downloaded_bytes)
+            except Exception:
+                pass
             for cb in self.on_failed:
-                cb(job.message_id, err_text)
+                try:
+                    cb(job.message_id, err_text)
+                except Exception:
+                    pass
+
+    async def _ensure_connected(self) -> None:
+        """Ensure the Telegram client is connected before downloading."""
+        try:
+            if not self.client_wrapper.client or not self.client_wrapper.client.is_connected():
+                await asyncio.wait_for(self.client_wrapper.connect(), timeout=30)
+            else:
+                # Do a quick health check — try to ping
+                is_auth = await asyncio.wait_for(
+                    self.client_wrapper.client.is_user_authorized(), timeout=10
+                )
+                if not is_auth:
+                    raise RuntimeError("Telegram session is not authorized.")
+        except asyncio.TimeoutError:
+            raise ConnectionError("Telegram connection timed out. Check your network.")
 
     async def _download_file(self, job: DownloadJob) -> None:
-        # Ensure client is connected
-        if not self.client_wrapper.client or not self.client_wrapper.client.is_connected():
-            await self.client_wrapper.connect()
-
+        # Ensure client connection with timeout
+        await self._ensure_connected()
         client = self.client_wrapper.client
 
-        # Fetch the message from Telegram (Saved Messages)
-        msgs = await client.get_messages("me", ids=[job.message_id])
+        # Fetch message from Telegram with timeout
+        try:
+            msgs = await asyncio.wait_for(
+                client.get_messages("me", ids=[job.message_id]),
+                timeout=30,
+            )
+        except asyncio.TimeoutError:
+            raise ConnectionError(f"Timed out fetching message #{job.message_id} from Telegram.")
+
         if not msgs or not msgs[0] or not msgs[0].media:
             raise ValueError(f"Telegram message #{job.message_id} not found or has no media.")
         msg = msgs[0]
@@ -245,10 +338,16 @@ class Downloader:
                     job.status = "completed"
                     job.progress = 100.0
                     job.downloaded_bytes = job.file_size
-                    await db.update_download_status(job.message_id, "completed", job.file_size, local_path)
-                    await db.record_download_history(job.message_id, job.filename, job.file_size, local_path)
+                    try:
+                        await db.update_download_status(job.message_id, "completed", job.file_size, local_path)
+                        await db.record_download_history(job.message_id, job.filename, job.file_size, local_path)
+                    except Exception:
+                        pass
                     for cb in self.on_completed:
-                        cb(job.message_id, local_path)
+                        try:
+                            cb(job.message_id, local_path)
+                        except Exception:
+                            pass
                     return
                 else:
                     # Larger than expected → corrupted, delete and restart
@@ -265,18 +364,24 @@ class Downloader:
 
         job.status = "downloading"
         job.downloaded_bytes = local_size
-        await db.update_download_status(job.message_id, "downloading", local_size)
+        try:
+            await db.update_download_status(job.message_id, "downloading", local_size)
+        except Exception:
+            pass
 
         mode = "ab" if local_size > 0 else "wb"
-        start_time = time.time()
-        last_time, last_bytes = start_time, local_size
+        last_time = time.time()
+        last_bytes = local_size
 
         try:
             async with aiofiles.open(local_path, mode) as f:
                 async for chunk in client.iter_download(msg.media, offset=local_size):
                     if self.is_paused:
                         job.status = "paused"
-                        await db.update_download_status(job.message_id, "paused", job.downloaded_bytes)
+                        try:
+                            await db.update_download_status(job.message_id, "paused", job.downloaded_bytes)
+                        except Exception:
+                            pass
                         return
 
                     if not self._running:
@@ -303,13 +408,22 @@ class Downloader:
                         )
                         last_time = now
                         last_bytes = job.downloaded_bytes
-                        await db.update_download_status(job.message_id, "downloading", job.downloaded_bytes)
+                        try:
+                            await db.update_download_status(job.message_id, "downloading", job.downloaded_bytes)
+                        except Exception:
+                            pass
                         for cb in self.on_progress:
-                            cb(job)
+                            try:
+                                cb(job)
+                            except Exception:
+                                pass
                 await f.flush()
 
         except asyncio.CancelledError:
-            await db.update_download_status(job.message_id, "cancelled", job.downloaded_bytes)
+            try:
+                await db.update_download_status(job.message_id, "cancelled", job.downloaded_bytes)
+            except Exception:
+                pass
             if os.path.exists(local_path) and os.path.getsize(local_path) == 0:
                 try:
                     os.remove(local_path)
@@ -325,17 +439,27 @@ class Downloader:
             except OSError:
                 pass
             raise ValueError(
-                f"Corrupted Download: expected {job.file_size} bytes, received {actual_size} bytes."
+                f"File size mismatch: expected {job.file_size}, got {actual_size}."
             )
 
+        # Force final progress update (important for small files that finish in < 0.1s)
         job.status = "completed"
         job.progress = 100.0
+        job.downloaded_bytes = job.file_size
         job.speed = 0.0
         job.eta = 0.0
-        await db.update_download_status(job.message_id, "completed", job.file_size, local_path)
-        await db.record_download_history(job.message_id, job.filename, job.file_size, local_path)
-
+        try:
+            await db.update_download_status(job.message_id, "completed", job.file_size, local_path)
+            await db.record_download_history(job.message_id, job.filename, job.file_size, local_path)
+        except Exception:
+            pass
         for cb in self.on_progress:
-            cb(job)
+            try:
+                cb(job)
+            except Exception:
+                pass
         for cb in self.on_completed:
-            cb(job.message_id, local_path)
+            try:
+                cb(job.message_id, local_path)
+            except Exception:
+                pass

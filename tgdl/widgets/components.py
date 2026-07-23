@@ -86,7 +86,11 @@ class DownloadProgressRow(Widget):
         with Vertical():
             with Horizontal():
                 yield Label(f"📄 {self.job.filename}", classes="fn-label")
-                yield Label(f"[{self.job.status.upper()}]", classes="status-label")
+                yield Label(
+                    f"[{self.job.status.upper()}]",
+                    classes="status-label",
+                    id=f"st-{self.job.message_id}",
+                )
             yield ProgressBar(total=100, show_percentage=False, id=f"pb-{self.job.message_id}")
             with Horizontal():
                 yield Label(self._format_bytes_info(), classes="metrics-label", id=f"mb-{self.job.message_id}")
@@ -97,12 +101,16 @@ class DownloadProgressRow(Widget):
         try:
             pb = self.query_one(f"#pb-{self.job.message_id}", ProgressBar)
             pb.progress = min(max(job.progress, 0.0), 100.0)
-            
+
             mb = self.query_one(f"#mb-{self.job.message_id}", Label)
             mb.update(self._format_bytes_info())
-            
+
             sb = self.query_one(f"#sb-{self.job.message_id}", Label)
             sb.update(self._format_speed_info())
+
+            # Also update the status badge
+            st = self.query_one(f"#st-{self.job.message_id}", Label)
+            st.update(f"[{self.job.status.upper()}]")
         except Exception:
             pass
 
