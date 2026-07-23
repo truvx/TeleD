@@ -49,8 +49,7 @@ class MainScreen(SelectionMixin, Screen):
     #left-pane:focus-within { border: round $accent; }
     #right-pane { width: 36%; height: 100%; border: round $primary; padding: 0 1; layout: vertical; }
     #right-pane:focus-within { border: round $accent; }
-    #search-bar { margin: 0 0 1 0; height: 3; border: round $primary-muted; }
-    #search-bar:focus { border: round $accent; }
+    #search-bar { margin: 0 0 1 0; height: 3; }
     #sync-spinner { height: 1; margin-bottom: 1; display: none; }
     #files-table { height: 1fr; }
     #stats-row { layout: horizontal; height: 4; margin-bottom: 1; }
@@ -73,7 +72,7 @@ class MainScreen(SelectionMixin, Screen):
         yield Header(show_clock=True)
         with Horizontal(id="main-container"):
             with Vertical(id="left-pane"):
-                yield Input(placeholder="🔍 Quick Search... (Ctrl+P, ESC clear)", id="search-bar")
+                yield Input(placeholder="🔍 Search... (Ctrl+R to sync, Ctrl+P to focus)", id="search-bar")
                 yield LoadingIndicator(id="sync-spinner")
                 yield DataTable(id="files-table")
             with Vertical(id="right-pane"):
@@ -94,59 +93,65 @@ class MainScreen(SelectionMixin, Screen):
         ]:
             table.add_column(title, key=key)
 
-        def handle_download_failure(mid: int, reason: str) -> None:
+        def handle_fail(mid: int, reason: str) -> None:
             var = "warning" if "Session" in reason or "Flood" in reason else "error"
-            title = "Session Error" if "Session" in reason else "Download Failure"
-            self.app.push_screen(ErrorModal(title, f"File #{mid}: {reason}", variant=var))
+            self.app.push_screen(ErrorModal("Download Failure", f"#{mid}: {reason}", variant=var))
 
-        self.downloader.on_failed.append(handle_download_failure)
+        self.downloader.on_failed.append(handle_fail)
         self.downloader.start()
         self.set_interval(0.1, self.update_stats_and_jobs)
-        # Defer all I/O so the TUI renders immediately
         asyncio.create_task(self._init_async())
 
     async def _init_async(self) -> None:
-        """Load settings and data in background — TUI is already visible at this point."""
-        # Load saved settings first (fast, local DB)
+        """Load settings, connect, auto-sync if empty — all in background after TUI renders."""
         try:
             self.sort_by = await db.get_setting("sort_by", "message_id")
             self.sort_desc = (await db.get_setting("sort_desc", "true")) == "true"
-            saved_search = await db.get_setting("search_query", "")
-            if saved_search:
-                self.query_one("#search-bar", Input).value = saved_search
+            saved = await db.get_setting("search_query", "")
+            if saved: self.query_one("#search-bar", Input).value = saved
             self.app.theme = await db.get_setting("theme", "textual-dark")
         except Exception:
             pass
 
-        # Connect Telegram client (may take time on slow networks — non-blocking here)
         try:
             await self.browser.client_wrapper.connect()
-        except Exception:
-            pass
-
-        # Fetch username for subtitle
-        try:
             me = await self.browser.client_wrapper.get_me()
             uname = me.get("username") or f"User_{me.get('id', 0)}"
             self.sub_title = f"Connected as: @{uname}"
         except Exception:
-            self.sub_title = "Offline — press Ctrl+R to sync"
+            self.sub_title = "Offline — press Ctrl+R to sync when connected"
 
+        count, _ = await db.get_filtered_totals()
+        if count == 0:
+            await self._do_sync(auto=True)
         await self.reload_table()
 
     # ── Actions ───────────────────────────────────────────────────────────
 
     def on_resize(self) -> None: self.refresh()
-
-    async def action_quit(self) -> None:
-        await self.downloader.stop()
-        self.app.exit()
-
-    async def action_focus_search(self) -> None:
-        self.query_one("#search-bar", Input).focus()
-
-    async def action_focus_queue(self) -> None:
-        self.query_one("#downloads-list", VerticalScroll).focus()
+    async def action_quit(self) -> None: await self.downloader.stop(); self.app.exit()
+    async def action_focus_search(self) -> None: self.query_one("#search-bar", Input).focus()
+    async def action_focus_queue(self) -> None: self.query_one("#downloads-list", VerticalScroll).focus()
+    async def action_toggle_theme(self) -> None:
+        self.app.theme = "textual-light" if getattr(self.app, "theme", "textual-dark") == "textual-dark" else "textual-dark"
+        await db.set_setting("theme", self.app.theme)
+    async def action_open_settings(self) -> None:
+        self.app.push_screen(SettingsScreen(), lambda s: asyncio.create_task(self.reload_table()) if s else None)
+    async def action_cycle_category(self) -> None:
+        self.current_category_idx = (self.current_category_idx + 1) % len(self.categories)
+        self.page = 1; await self.reload_table()
+    async def action_next_page(self) -> None:
+        mp = max(1, (self.total_count + self.page_size - 1) // self.page_size)
+        if self.page < mp: self.page += 1; await self.reload_table()
+    async def action_prev_page(self) -> None:
+        if self.page > 1: self.page -= 1; await self.reload_table()
+    async def action_toggle_pause_queue(self) -> None:
+        await (self.downloader.resume_queue() if self.downloader.is_paused else self.downloader.pause_queue())
+        await self.reload_table()
+    async def action_cancel_queue(self) -> None:
+        await self.downloader.cancel_queue(); await self.reload_table()
+    async def action_retry_failed(self) -> None:
+        await self.downloader.retry_failed(); await self.reload_table()
 
     async def action_clear_search(self) -> None:
         self.query_one("#search-bar", Input).value = ""
@@ -155,39 +160,23 @@ class MainScreen(SelectionMixin, Screen):
         self.query_one("#files-table", DataTable).focus()
         await self.reload_table()
 
-    async def action_toggle_theme(self) -> None:
-        self.app.theme = "textual-light" if getattr(self.app, "theme", "textual-dark") == "textual-dark" else "textual-dark"
-        await db.set_setting("theme", self.app.theme)
-
-    async def action_open_settings(self) -> None:
-        self.app.push_screen(SettingsScreen(), lambda saved: asyncio.create_task(self.reload_table()) if saved else None)
-
-    async def action_cycle_category(self) -> None:
-        self.current_category_idx = (self.current_category_idx + 1) % len(self.categories)
-        self.page = 1
-        await self.reload_table()
-
-    async def action_next_page(self) -> None:
-        max_pages = max(1, (self.total_count + self.page_size - 1) // self.page_size)
-        if self.page < max_pages:
-            self.page += 1
-            await self.reload_table()
-
-    async def action_prev_page(self) -> None:
-        if self.page > 1:
-            self.page -= 1
-            await self.reload_table()
-
-    async def action_sync_telegram(self) -> None:
+    async def _do_sync(self, auto: bool = False) -> None:
         spinner = self.query_one("#sync-spinner", LoadingIndicator)
         spinner.display = True
+        prev = self.sub_title or ""
+        self.sub_title = prev + " — Syncing…"
         try:
             await self.browser.sync_messages()
-            await self.reload_table()
+            self.sub_title = prev
+            if not auto: await self.reload_table()
         except Exception as e:
-            self.app.push_screen(ErrorModal("Sync Failure", str(e), variant="error"))
+            self.sub_title = prev
+            if not auto: self.app.push_screen(ErrorModal("Sync Failure", str(e), variant="error"))
         finally:
             spinner.display = False
+
+    async def action_sync_telegram(self) -> None:
+        await self._do_sync(); await self.reload_table()
 
     async def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
         col_map = {"filename": "filename", "type": "extension", "size": "size", "date": "date", "downloaded": "downloaded"}
@@ -204,8 +193,6 @@ class MainScreen(SelectionMixin, Screen):
             await db.set_setting("search_query", event.input.value)
             await self.reload_table()
 
-    # ── Table Rendering ───────────────────────────────────────────────────
-
     async def reload_table(self) -> None:
         try:
             search_bar = self.query_one("#search-bar", Input)
@@ -216,8 +203,7 @@ class MainScreen(SelectionMixin, Screen):
         cat = self.categories[self.current_category_idx]
         self.total_count, total_bytes = await db.get_filtered_totals(search_query=query, category_filter=cat)
         max_pages = max(1, (self.total_count + self.page_size - 1) // self.page_size)
-        if self.page > max_pages:
-            self.page = max_pages
+        if self.page > max_pages: self.page = max_pages
 
         offset = (self.page - 1) * self.page_size
         messages = await self.browser.load_messages(
@@ -230,42 +216,31 @@ class MainScreen(SelectionMixin, Screen):
         cat_label = f"[{cat.upper()}] " if cat else ""
         paused_str = " (PAUSED)" if self.downloader.is_paused else ""
         if search_bar:
-            search_bar.placeholder = (
-                f"🔍 {cat_label}Search (Page {self.page}/{max_pages}, "
-                f"{self.total_count} items, {format_bytes(total_bytes)}){paused_str}..."
-            )
+            search_bar.placeholder = f"🔍 {cat_label}Search (Page {self.page}/{max_pages}, {self.total_count} items, {format_bytes(total_bytes)}){paused_str}…"
 
-        st_map = {
-            "completed": "[bold green]Done[/]", "failed": "[bold red]Failed[/]",
-            "downloading": "[bold yellow]DL…[/]", "paused": "[yellow]Paused[/]",
-            "cancelled": "[dim]Cancelled[/]"
-        }
+        st_map = {"completed": "[green]Done[/]", "failed": "[red]Failed[/]",
+                  "downloading": "[yellow]DL…[/]", "paused": "[yellow]Paused[/]", "cancelled": "[dim]Cancelled[/]"}
         self._dl_count = 0
         for msg in messages:
-            if msg.download_status == "completed":
-                self._dl_count += 1
-            badge = get_colored_file_badge(msg.filename, msg.mime_type, msg.extension)
-            fn_disp = highlight_text(msg.filename, query) if query else msg.filename
-            is_dl = "[bold green]Yes[/]" if msg.download_status == "completed" else "[dim]No[/]"
-            status_label = st_map.get(msg.download_status, f"[cyan]{msg.download_status.title()}[/]")
-            date_str = msg.upload_date[:10] if msg.upload_date else ""
-            sel_mark = "✔" if msg.message_id in self.selected_ids else " "
-            table.add_row(sel_mark, fn_disp, format_bytes(msg.file_size), badge, date_str, is_dl, status_label, key=str(msg.message_id))
-
-        try:
-            self.query_one("#stat-speed", StatCard).update_value(format_bytes(total_bytes))
-        except Exception:
-            pass
+            if msg.download_status == "completed": self._dl_count += 1
+            table.add_row(
+                "✔" if msg.message_id in self.selected_ids else " ",
+                highlight_text(msg.filename, query) if query else msg.filename,
+                format_bytes(msg.file_size),
+                get_colored_file_badge(msg.filename, msg.mime_type, msg.extension),
+                msg.upload_date[:10] if msg.upload_date else "",
+                "[green]Yes[/]" if msg.download_status == "completed" else "[dim]No[/]",
+                st_map.get(msg.download_status, f"[cyan]{msg.download_status.title()}[/]"),
+                key=str(msg.message_id)
+            )
+        try: self.query_one("#stat-speed", StatCard).update_value(format_bytes(total_bytes))
+        except Exception: pass
         await self._update_counters()
-
-    # ── Live Progress Update ──────────────────────────────────────────────
 
     async def update_stats_and_jobs(self) -> None:
         active_jobs = self.downloader.active_jobs
-        try:
-            downloads_list = self.query_one("#downloads-list", VerticalScroll)
-        except Exception:
-            return
+        try: downloads_list = self.query_one("#downloads-list", VerticalScroll)
+        except Exception: return
 
         for msg_id, job in list(active_jobs.items()):
             if msg_id not in self.progress_widgets:
@@ -277,17 +252,12 @@ class MainScreen(SelectionMixin, Screen):
 
         for msg_id, widget in list(self.progress_widgets.items()):
             if msg_id not in active_jobs:
-                async def _remove(mid: int, w: DownloadProgressRow) -> None:
+                async def _rm(mid: int, w: DownloadProgressRow) -> None:
                     await asyncio.sleep(3)
-                    try:
-                        w.remove()
-                        self.progress_widgets.pop(mid, None)
-                    except Exception:
-                        pass
-                asyncio.create_task(_remove(msg_id, widget))
+                    try: w.remove(); self.progress_widgets.pop(mid, None)
+                    except Exception: pass
+                asyncio.create_task(_rm(msg_id, widget))
 
-        try:
-            self.query_one("#stat-active", StatCard).update_value(str(len(active_jobs)))
-        except Exception:
-            pass
+        try: self.query_one("#stat-active", StatCard).update_value(str(len(active_jobs)))
+        except Exception: pass
         await self._update_counters()
