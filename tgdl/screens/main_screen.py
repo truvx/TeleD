@@ -173,14 +173,14 @@ class MainScreen(SelectionMixin, Screen):
         self.set_subtitle(prev + " — Syncing…")
         last_reload = [0]
 
-        def on_sync_progress(scanned: int, total: int, found_media: int) -> None:
+        async def on_sync_progress(scanned: int, total: int, found_media: int) -> None:
             if total > 0:
                 pbar.update(total=total, progress=scanned)
             st = f"Syncing {scanned}/{total} messages ({found_media} media items found)..."
             self.set_subtitle(st)
             if found_media - last_reload[0] >= 15:
                 last_reload[0] = found_media
-                asyncio.create_task(self.reload_table())
+                await self.reload_table()
 
         try:
             n = await self.browser.sync_messages(progress_callback=on_sync_progress)
@@ -273,7 +273,7 @@ class MainScreen(SelectionMixin, Screen):
                     await asyncio.sleep(3)
                     try: w.remove(); self.progress_widgets.pop(mid, None)
                     except Exception: pass
-                asyncio.create_task(_rm(msg_id, widget))
+                asyncio.create_task(_rm(mid, widget))
 
         try: self.query_one("#stat-active", StatCard).update_value(str(len(active_jobs)))
         except Exception: pass
