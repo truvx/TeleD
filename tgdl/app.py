@@ -31,10 +31,6 @@ class TeleDApp(App):
 
     async def on_mount(self) -> None:
         await init_db()
-        try:
-            await self.client_wrapper.connect()
-        except Exception as e:
-            logger.warning(f"Initial connection notice: {e}")
         await self.push_screen(MainScreen(self.browser, self.downloader))
 
     async def on_unmount(self) -> None:
@@ -76,7 +72,7 @@ async def run_login_if_needed() -> None:
     finally:
         try:
             await client.disconnect()
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
         except Exception:
             pass
 

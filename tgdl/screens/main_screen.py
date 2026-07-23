@@ -104,7 +104,7 @@ class MainScreen(SelectionMixin, Screen):
         asyncio.create_task(self._init_async())
 
     async def _init_async(self) -> None:
-        """Load settings, connect, auto-sync if empty — all in background after TUI renders."""
+        """Load settings, render table immediately, and connect to Telegram in background."""
         try:
             self.sort_by = await db.get_setting("sort_by", "message_id")
             self.sort_desc = (await db.get_setting("sort_desc", "true")) == "true"
@@ -114,10 +114,9 @@ class MainScreen(SelectionMixin, Screen):
         await self.reload_table()
 
         try:
-            if not self.browser.client_wrapper.client or not self.browser.client_wrapper.client.is_connected():
-                await self.browser.client_wrapper.connect()
-            me = await self.browser.client_wrapper.get_me()
-            if me:
+            is_auth = await self.browser.client_wrapper.connect()
+            if is_auth:
+                me = await self.browser.client_wrapper.get_me()
                 uname = me.get("username") or f"User_{me.get('id', 0)}"
                 self.set_subtitle(f"Connected as: @{uname}")
             else:
