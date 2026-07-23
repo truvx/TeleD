@@ -14,7 +14,7 @@ class SelectionMixin:
     def _get_active_table(self) -> DataTable:
         from textual.widgets import TabbedContent
         try:
-            tabs = self.query_one("#main-tabs", TabbedContent)
+            tabs = self.query_one("#right-tabs", TabbedContent)
             if tabs.active == "downloaded-table-pane":
                 return self.query_one("#downloaded-table", DataTable)
         except Exception:

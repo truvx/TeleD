@@ -70,17 +70,17 @@ class MainScreen(SelectionMixin, Screen):
                 yield Input(placeholder="🔍 Search... (Ctrl+R to sync, ESC to clear, Ctrl+P to focus)", id="search-bar")
                 yield ProgressBar(total=100, show_percentage=True, id="sync-progress-bar")
                 yield LoadingIndicator(id="sync-spinner")
-                with TabbedContent(initial="library-tab", id="main-tabs"):
-                    with TabPane("Library", id="library-tab"):
-                        yield DataTable(id="files-table")
-                    with TabPane("Downloaded", id="downloaded-table-pane"):
-                        yield DataTable(id="downloaded-table")
+                yield DataTable(id="files-table")
             with Vertical(id="right-pane"):
                 with Horizontal(id="stats-row"):
                     yield StatCard("Filtered Size", "0 B", id="stat-speed")
                     yield StatCard("Active Jobs", "0", id="stat-active")
-                with VerticalScroll(id="downloads-list"):
-                    pass
+                with TabbedContent(initial="queue-tab", id="right-tabs"):
+                    with TabPane("Queue", id="queue-tab"):
+                        with VerticalScroll(id="downloads-list"):
+                            pass
+                    with TabPane("Downloaded", id="downloaded-table-pane"):
+                        yield DataTable(id="downloaded-table")
         yield CounterBar(id="counter-bar")
         yield Footer()
 
@@ -248,7 +248,7 @@ class MainScreen(SelectionMixin, Screen):
             search_bar, query = None, None
 
         try:
-            tabs = self.query_one("#main-tabs", TabbedContent)
+            tabs = self.query_one("#right-tabs", TabbedContent)
             is_downloaded_tab = (tabs.active == "downloaded-table-pane")
         except Exception:
             is_downloaded_tab = False
