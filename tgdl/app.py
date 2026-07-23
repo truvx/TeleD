@@ -30,9 +30,7 @@ class TeleDApp(App):
         container.register(Downloader, self.downloader)
 
     async def on_mount(self) -> None:
-        # Init DB synchronously (fast, local)
         await init_db()
-        # Push screen immediately — connection happens in background inside MainScreen
         await self.push_screen(MainScreen(self.browser, self.downloader))
 
     async def on_unmount(self) -> None:
@@ -77,6 +75,7 @@ async def run_login() -> None:
     finally:
         try:
             await client.disconnect()
+            await asyncio.sleep(0.1)
         except Exception:
             pass
 
@@ -88,10 +87,7 @@ def main() -> None:
             print("Invalid configuration. Exiting.")
             sys.exit(1)
 
-    # Login in terminal BEFORE TUI (so phone/OTP prompts work)
     asyncio.run(run_login())
-
-    # Launch TUI — on_mount is non-blocking, screen renders instantly
     TeleDApp().run()
 
 

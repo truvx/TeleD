@@ -73,7 +73,7 @@ class MainScreen(SelectionMixin, Screen):
         yield Header(show_clock=True)
         with Horizontal(id="main-container"):
             with Vertical(id="left-pane"):
-                yield Input(placeholder="🔍 Search... (Ctrl+R to sync, Ctrl+P to focus)", id="search-bar")
+                yield Input(placeholder="🔍 Search... (Ctrl+R to sync, ESC to clear, Ctrl+P to focus)", id="search-bar")
                 yield ProgressBar(total=100, show_percentage=True, id="sync-progress-bar")
                 yield LoadingIndicator(id="sync-spinner")
                 yield DataTable(id="files-table")
@@ -114,8 +114,6 @@ class MainScreen(SelectionMixin, Screen):
         try:
             self.sort_by = await db.get_setting("sort_by", "message_id")
             self.sort_desc = (await db.get_setting("sort_desc", "true")) == "true"
-            saved = await db.get_setting("search_query", "")
-            if saved: self.query_one("#search-bar", Input).value = saved
             self.app.theme = await db.get_setting("theme", "textual-dark")
         except Exception: pass
 
@@ -124,7 +122,7 @@ class MainScreen(SelectionMixin, Screen):
             me = await self.browser.client_wrapper.get_me()
             uname = me.get("username") or f"User_{me.get('id', 0)}"
             self.set_subtitle(f"Connected as: @{uname}")
-        except Exception:
+        except Exception as e:
             self.set_subtitle("Offline — press Ctrl+R to sync when connected")
 
         count, _ = await db.get_filtered_totals()
@@ -160,7 +158,6 @@ class MainScreen(SelectionMixin, Screen):
 
     async def action_clear_search(self) -> None:
         self.query_one("#search-bar", Input).value = ""
-        await db.set_setting("search_query", "")
         self.page = 1
         self.query_one("#files-table", DataTable).focus()
         await self.reload_table()
@@ -207,7 +204,6 @@ class MainScreen(SelectionMixin, Screen):
     async def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "search-bar":
             self.page = 1
-            await db.set_setting("search_query", event.input.value)
             await self.reload_table()
 
     async def reload_table(self) -> None:
