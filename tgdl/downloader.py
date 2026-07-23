@@ -176,7 +176,8 @@ class Downloader:
             for cb in self.on_failed: cb(job.message_id, err_text)
 
     async def _download_file(self, job: DownloadJob) -> None:
-        if not self.client_wrapper.client: raise RuntimeError("Telegram client not connected.")
+        if not self.client_wrapper.client or not self.client_wrapper.client.is_connected():
+            await self.client_wrapper.connect()
         msgs = await self.client_wrapper.client.get_messages("me", ids=[job.message_id])
         if not msgs or not msgs[0] or not msgs[0].media: raise ValueError("Telegram message or media no longer available.")
         msg = msgs[0]

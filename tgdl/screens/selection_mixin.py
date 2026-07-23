@@ -87,7 +87,7 @@ class SelectionMixin:
         await self.reload_table()
 
     async def _update_counters(self) -> None:
-        q_cnt = self.downloader.queue.qsize() + len(self.downloader.queued_ids)
+        q_cnt = len(self.downloader.active_jobs)
         sel_bytes = sum(
             j.file_size for j in self.downloader.active_jobs.values()
             if j.message_id in self.selected_ids
