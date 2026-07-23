@@ -59,7 +59,12 @@ class Downloader:
     async def add_to_queue(self, message_id: int) -> None:
         if message_id in self.queued_ids or message_id in self.active_jobs: return
         self.queued_ids.add(message_id)
-        status = "paused" if self.is_paused else "pending"
+        msg_meta = await db.get_message(message_id)
+        if not msg_meta: return
+
+        status = "paused" if self.is_paused else "queued"
+        job = DownloadJob(message_id=message_id, filename=msg_meta.filename, file_size=msg_meta.file_size, downloaded_bytes=0, status=status)
+        self.active_jobs[message_id] = job
         await db.update_download_status(message_id, status, 0)
         await self.queue.put(message_id)
 
@@ -102,13 +107,14 @@ class Downloader:
                 msg_id = await self.queue.get()
                 self.queued_ids.discard(msg_id)
                 
-                msg_meta = await db.get_message(msg_id)
-                if not msg_meta:
-                    self.queue.task_done()
-                    continue
-                
-                job = DownloadJob(message_id=msg_id, filename=msg_meta.filename, file_size=msg_meta.file_size, downloaded_bytes=0, status="pending")
-                self.active_jobs[msg_id] = job
+                job = self.active_jobs.get(msg_id)
+                if not job:
+                    msg_meta = await db.get_message(msg_id)
+                    if not msg_meta:
+                        self.queue.task_done()
+                        continue
+                    job = DownloadJob(message_id=msg_id, filename=msg_meta.filename, file_size=msg_meta.file_size, downloaded_bytes=0, status="pending")
+                    self.active_jobs[msg_id] = job
                 
                 success = False
                 while job.retries <= job.max_retries and not success and not self.is_paused:

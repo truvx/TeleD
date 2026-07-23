@@ -112,6 +112,8 @@ class DownloadProgressRow(Widget):
             return "✖ Failed"
         elif self.job.status == "paused":
             return "⏸ Paused"
+        elif self.job.status == "queued":
+            return "⏳ Queued in line..."
             
         cur_spd = format_speed(self.job.speed)
         avg_spd = format_speed(self.job.avg_speed)
