@@ -146,6 +146,13 @@ class MainScreen(SelectionMixin, Screen):
         count, _ = await db.get_filtered_totals()
         if count == 0:
             await self._do_sync(auto=True)
+        self.set_interval(1.0, self._update_counters)
+        self.set_interval(3.0, self._check_deleted_files)
+        
+    async def _check_deleted_files(self) -> None:
+        changed = await db.sync_missing_files()
+        if changed:
+            await self.reload_table()
 
     # ── Actions ───────────────────────────────────────────────────────────
 

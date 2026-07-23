@@ -251,5 +251,24 @@ def _clear_cache_sync() -> None:
             conn.execute("DELETE FROM settings")
             conn.commit()
     except Exception as e: _handle_db_error(e)
-
 async def clear_cache() -> None: await asyncio.to_thread(_clear_cache_sync)
+
+def _sync_missing_files_sync() -> bool:
+    changed = False
+    try:
+        with _get_db() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT message_id, local_path FROM files WHERE downloaded = 1").fetchall()
+            for row in rows:
+                path = row["local_path"]
+                if path and not os.path.exists(path):
+                    conn.execute("UPDATE files SET downloaded = 0, local_path = NULL WHERE message_id = ?", (row["message_id"],))
+                    changed = True
+            if changed:
+                conn.commit()
+    except Exception as e:
+        _handle_db_error(e)
+    return changed
+
+async def sync_missing_files() -> bool:
+    return await asyncio.to_thread(_sync_missing_files_sync)
