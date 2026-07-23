@@ -191,6 +191,10 @@ class MainScreen(SelectionMixin, Screen):
         await self.reload_table()
 
     async def _do_sync(self, auto: bool = False) -> None:
+        if getattr(self, "_is_syncing", False):
+            return
+        self._is_syncing = True
+        
         pbar = self.query_one("#sync-progress-bar", ProgressBar)
         pbar.display = True
         pbar.progress = 0
@@ -207,7 +211,7 @@ class MainScreen(SelectionMixin, Screen):
 
         try:
             # Ensure client is connected and authorized before syncing
-            is_auth = await self.browser.client_wrapper.connect()
+            is_auth = await asyncio.wait_for(self.browser.client_wrapper.connect(), timeout=10.0)
             if not is_auth:
                 self.set_subtitle("Offline — press Ctrl+R to sync when connected")
                 if not auto:
@@ -218,12 +222,18 @@ class MainScreen(SelectionMixin, Screen):
                     ))
                 return
 
-            n = await self.browser.sync_messages(progress_callback=on_sync_progress)
-            me = await self.browser.client_wrapper.get_me()
+            n = await asyncio.wait_for(self.browser.sync_messages(progress_callback=on_sync_progress), timeout=30.0)
+            me = await asyncio.wait_for(self.browser.client_wrapper.get_me(), timeout=10.0)
             uname = me.get("username") if me else None
             self.set_subtitle(f"Connected as: @{uname}" if uname else "Connected")
             await self.reload_table()
             self.notify(f"✅ Synced {n} new files!", timeout=3)
+        except asyncio.TimeoutError:
+            if auto:
+                self.set_subtitle("Offline — press Ctrl+R to sync when ready")
+            else:
+                self.set_subtitle("Sync timed out — check connection")
+                self.app.push_screen(ErrorModal("Sync Failed", "The connection to Telegram timed out.", variant="warning"))
         except Exception as e:
             err_msg = str(e)
             if auto:
@@ -234,6 +244,7 @@ class MainScreen(SelectionMixin, Screen):
                 self.app.push_screen(ErrorModal("Sync Failed", err_msg, variant="warning"))
         finally:
             pbar.display = False
+            self._is_syncing = False
 
     async def action_sync_telegram(self) -> None:
         asyncio.create_task(self._do_sync())
