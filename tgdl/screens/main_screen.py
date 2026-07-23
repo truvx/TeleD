@@ -213,7 +213,7 @@ class MainScreen(SelectionMixin, Screen):
             for attempt in range(2):
                 try:
                     # Ensure client is connected and authorized before syncing
-                    is_auth = await asyncio.wait_for(self.browser.client_wrapper.connect(), timeout=10.0)
+                    is_auth = await asyncio.wait_for(self.browser.client_wrapper.connect(), timeout=60.0)
                     if not is_auth:
                         self.set_subtitle("Offline — press Ctrl+R to sync when connected")
                         if not auto:
